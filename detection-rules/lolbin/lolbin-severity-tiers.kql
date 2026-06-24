@@ -1,18 +1,29 @@
 // ============================================================
-// 1. INFO — context only, expected admin/BAU activity
+// 1. INFO — context only, expected admin/BAU activity.
+//    These fire on legitimate admin/recon commands constantly; they exist
+//    to enrich a timeline around a real alert, not to alert on their own.
 // ============================================================
 DeviceProcessEvents
 | where Timestamp > ago(1d)
 | where
+    // whoami /priv /groups — token/privilege enumeration (T1033). Standard
+    // post-exploitation recon, but also exactly what admins/scripts run. Context only.
     (ProcessCommandLine has "whoami.exe" and ProcessCommandLine has_any ("/priv", "/groups")) or
+    // arp -a — local ARP cache / neighbor discovery (T1016). Trivial recon, also
+    // routine network troubleshooting. Context only.
     (ProcessCommandLine has "arp.exe" and ProcessCommandLine has "/a") or
+    // ipconfig /displaydns — reveals recently resolved domains (T1016). Useful to an
+    // attacker mapping the host, but a normal diagnostic command. Context only.
     (ProcessCommandLine has "ipconfig.exe" and ProcessCommandLine has "/displaydns") or
+    // netstat -an/-o — active connections + owning PIDs (T1049). Recon signal, but
+    // also everyday admin troubleshooting. Context only.
     (ProcessCommandLine has "netstat.exe" and ProcessCommandLine has_any ("-an", "-o")) or
-    // wevtutil read-only ops (query/get-log/enum-logs) split out from "cl" (clear = High)
+    // wevtutil read-only ops: qe (query-events), gl (get-log), el (enum-logs) (T1654).
+    // Reading logs is benign; the log-CLEAR variant "cl" is anti-forensics and lives in High.
     (ProcessCommandLine has "wevtutil.exe" and ProcessCommandLine has_any ("qe", "gl", "el")) or
     // cmd.exe spawning a script engine — extremely common (RMM, GPO/logon scripts,
     // deployers, scheduled tasks). Bare lineage with no other discriminator is context-only;
-    // the malicious malspam variant (Office/browser grandparent) lives in the High rule.
+    // the malicious malspam variant (Office/archiver parent) lives in the High rule.
     // Bug fix: original used not(... !~ ...) double-negation, which required the command line
     // to equal BOTH known-good CompanyPortal strings at once (impossible) — collapsed to a
     // plain exclusion of either known-good launcher.
@@ -26,19 +37,37 @@ DeviceProcessEvents
 
 
 // ============================================================
-// 2. LOW — unusual tooling / recon, low confidence of intent
+// 2. LOW — unusual tooling / recon, low confidence of intent.
+//    More unusual than the Info set (not something most users ever run),
+//    but still firmly dual-use; worth surfacing, rarely worth paging.
 // ============================================================
 DeviceProcessEvents
 | where Timestamp > ago(1d)
 | where
+    // dnscmd — DNS server management (T1016). Abused to enumerate/modify DNS or load a
+    // server-level plugin DLL, but on a DC it can be legitimate admin. Low without args context.
     (ProcessCommandLine has "dnscmd.exe") or
+    // nmap — port/host scanning (T1046). Not a Windows binary; presence on an endpoint is
+    // unusual and worth noting, but pentesters/IT diagnostics use it too. Low.
     (ProcessCommandLine has "nmap.exe") or
+    // systeminfo — host/patch-level inventory (T1082). Classic recon, also legitimate
+    // inventory/diagnostic. Low.
     (ProcessCommandLine has "systeminfo.exe") or
+    // nltest — domain trust / DC enumeration (T1482). Strong AD-recon signal, but admins
+    // run it too. Low on its own; escalate if chained with other discovery.
     (ProcessCommandLine has "nltest.exe") or
+    // tasklist /svc /v — process+service enumeration, often to spot AV/EDR (T1057). Dual-use
+    // with normal troubleshooting. Low.
     (ProcessCommandLine has "tasklist.exe" and ProcessCommandLine has_any ("/svc", "/v")) or
+    // qwinsta / query user — enumerate logged-on sessions (T1033), useful before lateral
+    // movement or RDP hijack. Also normal on RDS/terminal servers. Low.
     (ProcessCommandLine has_any ("qwinsta.exe", "query.exe") and ProcessCommandLine has "user") or
+    // net view/group/user (NOT /add) — share/group/account enumeration (T1087). The read-only
+    // forms are dual-use recon; "/add" (account creation) is escalation and excluded here.
     (ProcessCommandLine has "net.exe" and ProcessCommandLine has_any ("view", "group", "user")
         and not(ProcessCommandLine has "/add")) or
+    // vssadmin list — enumerate shadow copies (T1490 recon). Reconnaissance toward backup
+    // deletion; the destructive "delete shadows" form is in High. Low for the list form.
     (ProcessCommandLine has "vssadmin.exe" and ProcessCommandLine has "list")
 | extend Severity = "Low"
 | project Timestamp, Severity, DeviceName, AccountName, ProcessCommandLine, FileName, InitiatingProcessFileName, InitiatingProcessParentFileName
@@ -47,47 +76,87 @@ DeviceProcessEvents
 
 // ============================================================
 // 3. MEDIUM — deliberate staging / persistence / cred-access setup,
-//             or real technique with frequent benign explanations
-//             (needs a second signal / human review to escalate)
+//             or real technique with frequent benign explanations.
+//             Real signal, but legitimate explanations exist often enough
+//             that it needs a second signal / human review to escalate.
 // ============================================================
 DeviceProcessEvents
 | where Timestamp > ago(1d)
 | where
     // --- staging / persistence / cred-access setup ---
+    // wmic process call create — process creation, classic remote/lateral execution and a
+    // common malware spawn primitive (T1047). Also used by legit sysadmin scripting. Medium.
     (ProcessCommandLine has "wmic.exe" and ProcessCommandLine has_all ("process", "call", "create")) or
+    // schtasks /create — scheduled-task persistence (T1053.005). Extremely common technique,
+    // but tons of legitimate software registers tasks. Medium; escalate on /ru SYSTEM or odd paths.
     (ProcessCommandLine has "schtasks.exe" and ProcessCommandLine has "/create") or
+    // reg add ...\Run / \RunOnce — autorun persistence (T1547.001). Many installers write Run
+    // keys legitimately, so the key alone is Medium; suspicious target/value should escalate.
     (ProcessCommandLine has "reg.exe" and ProcessCommandLine has "add"
         and ProcessCommandLine has_any ("\\Run", "\\RunOnce")) or
+    // PowerShell with stealth flags (-nop/-w hidden/-ep bypass) but NO encoded/URL payload
+    // (T1059.001). Hidden/bypass execution is suspicious, yet legit deployment scripts use the
+    // same flags; the encoded/download variants are escalated to High, so this stays Medium.
     (ProcessCommandLine has "powershell.exe" and ProcessCommandLine has_any ("-nop", "-w hidden", "-windowstyle hidden", "-ep bypass", "-executionpolicy bypass")
         and not(ProcessCommandLine has_any ("-enc", "http", "https"))) or
+    // nslookup/certutil -ping — repeated TXT/record lookups can be a DNS-tunneling precursor
+    // (T1071.004), but also normal connectivity checks. Medium.
     (ProcessCommandLine has_any ("nslookup.exe", "certutil.exe") and ProcessCommandLine has "-ping") or
+    // net use ... /user: — mounting a share with inline credentials (T1021.002 / T1078).
+    // Lateral-movement setup, but also legitimate drive mapping. Medium.
     (ProcessCommandLine has "net.exe" and ProcessCommandLine has "use" and ProcessCommandLine has "/user:") or
-    (ProcessCommandLine has "forfiles.exe" and ProcessCommandLine has "/c") or  // indirect command execution, also used in legit batch/IT scripts
+    // forfiles /c — indirect command execution / proxy (T1202): forfiles runs an arbitrary
+    // command per matched file, a known AppLocker-evasion trick. Also used in legit IT/batch
+    // housekeeping scripts. Medium.
+    (ProcessCommandLine has "forfiles.exe" and ProcessCommandLine has "/c") or
     // --- demoted from High: real technique but common legitimate use ---
-    (ProcessCommandLine has "agentexecutor.exe" and ProcessCommandLine has "-powershell") or  // Intune IME PS proxy — noisy in Intune fleets
-    (ProcessCommandLine has "attrib.exe" and ProcessCommandLine has_any ("+h", "-h", "+s", "-s")) or  // installers/backup tools toggle these too
-    (ProcessCommandLine has "msbuild.exe") or  // inline-task bypass, but BAU on dev/build hosts
+    // agentexecutor -powershell — Intune Management Extension proxying PowerShell (T1218).
+    // Known app-control bypass, but fires constantly in any Intune-managed fleet running
+    // remediation scripts. Medium unless you know your org doesn't use Intune remediations.
+    (ProcessCommandLine has "agentexecutor.exe" and ProcessCommandLine has "-powershell") or
+    // attrib +h/-h/+s/-s — toggling hidden/system attributes to conceal files (T1564.001).
+    // Real evasion step, but installers/backup tools do this too. Medium.
+    (ProcessCommandLine has "attrib.exe" and ProcessCommandLine has_any ("+h", "-h", "+s", "-s")) or
+    // msbuild (no args) — inline-task XML execution is a known signed-binary bypass (T1127.001),
+    // but it's BAU on dev/build hosts. Medium unless you can scope to non-dev endpoints.
+    (ProcessCommandLine has "msbuild.exe") or
+    // curl/wget -o/-d — download+write to disk, or POST data out (T1105 / T1041). Common in
+    // legitimate automation and scripts too, so the flag presence alone is Medium.
     (ProcessCommandLine in ("curl.exe", "wget.exe")
-        and ProcessCommandLine has_any ("-o", "--output", "-d", "--data")) or  // legit automation downloads/posts too
-    (ProcessCommandLine has "robocopy.exe" and ProcessCommandLine has_any ("/mir", "/e", "/copyall")) or  // also normal backup/admin tool
-    (ProcessCommandLine has "sc.exe" and ProcessCommandLine has_any ("create", "config")) or  // escalate to High when binPath -> powershell/cmd/temp
+        and ProcessCommandLine has_any ("-o", "--output", "-d", "--data")) or
+    // robocopy /mir /e /copyall — recursive mass-copy, used for staging/exfil (T1074 / T1560),
+    // but also a totally normal admin/backup/migration tool. Medium.
+    (ProcessCommandLine has "robocopy.exe" and ProcessCommandLine has_any ("/mir", "/e", "/copyall")) or
+    // sc create/config — service install/modify for persistence (T1543.003). Fires on every
+    // legit service install, so Medium; escalate to High only when the binPath points at
+    // powershell/cmd or a temp/user path.
+    (ProcessCommandLine has "sc.exe" and ProcessCommandLine has_any ("create", "config")) or
+    // Scripting-language interpreters + payload-ish keyword regex (T1059.006). Intent is
+    // high-confidence when it really is malware, but "invoke"/"payload" are common enough words
+    // in legitimate scripts/logs that the keyword match alone has real FP potential. Medium.
+    // Exclusions are known-good local apps (XNP LSP-home, ElsterAuthenticator, BNOTK SAK lite).
     (ProcessCommandLine in ("perl.exe", "python.exe", "ruby.exe", "java.exe")
-        and ProcessCommandLine matches regex "(?i).*(http|https|base64|shellcode|obfuscate|invoke|payload).*"  // "invoke"/"payload" are common benign words
+        and ProcessCommandLine matches regex "(?i).*(http|https|base64|shellcode|obfuscate|invoke|payload).*"
         and not(ProcessCommandLine has_any ("\\AppData\\Roaming\\XNP\\lsp-home", "ElsterAuthenticator", "BNOTK SAK lite"))) or
-    // pending bake-in: confirm the exclusion list below is exhaustive for this env before promoting to High
+    // rundll32 running script content (javascript:/vbscript:/.js/.vbs/mshtml) via signed binary
+    // proxy (T1218.011). High-value technique, but pending bake-in here: confirm the exclusion
+    // list below is exhaustive for this env before promoting to High. Scoped to the Local
+    // Service account to cut user-driven file-association noise. Exclusions: explorer.exe parent
+    // (normal double-click launches), known-good env scripts/domains, and the benign
+    // WebClient/WebDAV DavSetCookie redirector pattern under svchost.
     (FileName == "rundll32.exe"
         and ProcessCommandLine has_any ("javascript:", "vbscript:", "RunHTMLApplication", "javascript", "vbscript", ".js", ".vbs", "mshtml")
-        and InitiatingProcessFileName != "explorer.exe"  // normal file-association launches
-        and InitiatingProcessAccountName has_any ("lokaler dienst")  // restrict to Local Service context — rare/unusual for user-driven mshtml launches
-        and not(ProcessCommandLine has_any ("Druckerauswahl.vbs", "js.ui-portal.de", "use.typekit.net"))  // known-benign env scripts/domains
+        and InitiatingProcessFileName != "explorer.exe"
+        and InitiatingProcessAccountName has_any ("lokaler dienst")
+        and not(ProcessCommandLine has_any ("Druckerauswahl.vbs", "js.ui-portal.de", "use.typekit.net"))
         and not(
             ProcessCommandLine has_all ("davclnt.dll,DavSetCookie", ".js", "http")
             and InitiatingProcessVersionInfoInternalFileName has "svchost.exe"
-        )) or  // benign WebClient/WebDAV redirector cookie behavior
-    // demoted from the High malspam-chain test: Outlook and browsers spawn child processes
-    // routinely via protocol handlers, downloads, and add-ins — too noisy to treat as a
-    // direct-parent->LOLBin chain the way document apps/archivers are. Same RunAction.vbs
-    // (contentACCESS Outlook add-in) exclusion as the High-tier version.
+        )) or
+    // Outlook/browser directly spawning a LOLBin (T1566 / T1204). Demoted from the High
+    // malspam-chain test: Outlook and browsers spawn child processes routinely via protocol
+    // handlers, downloads, and add-ins — too noisy to treat like the document-app/archiver
+    // chain. RunAction.vbs is the contentACCESS Outlook add-in (legit), excluded.
     (InitiatingProcessFileName in~ ("outlook.exe", "chrome.exe", "msedge.exe", "firefox.exe", "iexplore.exe", "brave.exe")
         and FileName in~ ("certutil.exe", "bitsadmin.exe", "mshta.exe", "rundll32.exe",
             "regsvr32.exe", "wscript.exe", "cscript.exe", "powershell.exe", "pwsh.exe",
@@ -99,59 +168,109 @@ DeviceProcessEvents
 
 
 // ============================================================
-// 4. HIGH — execution / dump / destroy / exfil / lateral move
-//           (rare/no legitimate explanation, or the action itself
-//            is the malicious step)
+// 4. HIGH — execution / dump / destroy / exfil / lateral move.
+//    Rare/no legitimate explanation, or the action itself IS the malicious
+//    step. These are wired to the most aggressive downstream automation.
 // ============================================================
 DeviceProcessEvents
 | where Timestamp > ago(1d)
 | where
+    // bcdedit /set|/deletevalue — boot-config tampering (T1490 / T1542). Classic ransomware
+    // anti-recovery step (e.g. disabling recovery, safe-boot abuse). Near-zero benign endpoint use.
     (ProcessCommandLine has "bcdedit.exe" and ProcessCommandLine has_any ("/set", "/deletevalue")) or
+    // bitsadmin transfer|download — BITS jobs abused for stealthy payload delivery (T1197 / T1105).
     (ProcessCommandLine has "bitsadmin.exe" and ProcessCommandLine has_any ("transfer", "download")) or
+    // certutil download/decode/encode (urlcache/verifyctl/-split/-decode/-encode) (T1105 / T1140).
+    // Classic download-and-decode-via-signed-binary. EmpirumAgent (Matrix42 software deployment)
+    // legitimately drives certutil this way, so it is excluded on either the process or the
+    // initiating command line.
     (ProcessCommandLine has "certutil.exe"
         and ProcessCommandLine has_any ("-urlcache -f -split", "-urlcache -split -f", "-verifyctl -f -split", "-decode", "-encode")
         and not(ProcessCommandLine has "EmpirumAgent")
-        and not(InitiatingProcessCommandLine has "EmpirumAgent")) or  // EmpirumAgent (Matrix42 software deployment) uses certutil legitimately this way
+        and not(InitiatingProcessCommandLine has "EmpirumAgent")) or
+    // PowerShell encoded command / in-memory download cradle (T1059.001 / T1027 / T1105).
+    // -enc/-encodedcommand = base64 command execution; FromBase64String/DownloadString/
+    // DownloadFile/Net.WebClient = classic download-and-run. (Bug fix: original matched cmd.exe
+    // for -enc, but -enc is a PowerShell switch.) Essentially always worth a High look.
     (ProcessCommandLine has_any ("powershell.exe", "pwsh.exe")
-        and ProcessCommandLine has_any ("-enc", "-encodedcommand", "frombase64string", "downloadstring", "downloadfile", "net.webclient")) or  // merged richer encoded/download-cradle heuristic
-    (ProcessCommandLine has_any ("powershell.exe", "pwsh.exe") and ProcessCommandLine matches regex "(?i).*i(e|x)(.*?)\\(") or  // IEX / Invoke-Expression download cradle
+        and ProcessCommandLine has_any ("-enc", "-encodedcommand", "frombase64string", "downloadstring", "downloadfile", "net.webclient")) or
+    // PowerShell IEX / Invoke-Expression (T1059.001) — in-memory execution of a fetched/decoded
+    // string, the core download-cradle pattern. Regex catches ie/ix followed by an opening paren.
+    (ProcessCommandLine has_any ("powershell.exe", "pwsh.exe") and ProcessCommandLine matches regex "(?i).*i(e|x)(.*?)\\(") or
+    // installutil — .NET InstallUtil signed-binary proxy execution (T1218.004). Near-zero legit
+    // use outside a dev box actively building .NET installers; rare enough to be High.
     (ProcessCommandLine has "installutil.exe") or
-    (ProcessCommandLine has_any ("regasm.exe", "regsvcs.exe")) or  // same family as installutil.exe — unsigned .NET assembly execution
+    // regasm/regsvcs — same .NET-LOLBin family as installutil (T1218.009): execute code in an
+    // unsigned assembly via a signed registration tool. Same rarity rationale → High.
+    (ProcessCommandLine has_any ("regasm.exe", "regsvcs.exe")) or
+    // mavinject — process injection via a signed Microsoft binary (T1055). Essentially always
+    // malicious on an endpoint.
     (ProcessCommandLine has "mavinject.exe") or
+    // mshta + http/https — remote HTA execution (T1218.005). Pulling and running a remote
+    // .hta/scriptlet is essentially always malicious.
     (ProcessCommandLine has "mshta.exe" and ProcessCommandLine has_any ("http", "https")) or
+    // msiexec + http/https — installing an MSI straight from a URL (T1218.007). Legit enterprise
+    // deployment rarely invokes msiexec with a remote URL directly from the endpoint.
     (ProcessCommandLine has "msiexec.exe" and ProcessCommandLine matches regex "(?i).*(http|https).*") or
+    // netsh interface portproxy add — sets up a port-forward/pivot (T1090). Strong tunneling/
+    // lateral-movement signal; almost never legitimate on a workstation.
     (ProcessCommandLine has "netsh.exe" and ProcessCommandLine has "interface portproxy add") or
-    (ProcessCommandLine has "procdump.exe" and ProcessCommandLine has_any ("-ma", "lsass")) or  // fixed: required dump-relevant args (was bare procdump OR mavinject dup)
-    (ProcessCommandLine has "regsvr32.exe" and ProcessCommandLine matches regex "(?i).*\\/i:(http|https).*") or  // Squiblydoo
-    (ProcessCommandLine has "cmstp.exe" and ProcessCommandLine has_any ("/s", "/au")) or  // UAC-bypass / INF-based proxy execution
-    (ProcessCommandLine has "odbcconf.exe" and ProcessCommandLine has "regsvr") or  // DLL load via odbcconf, regsvr32 sibling technique
-    (ProcessCommandLine has "pcalua.exe" and ProcessCommandLine has "-a") or  // Program Compatibility Assistant proxy execution
-    (ProcessCommandLine has "wuauclt.exe" and ProcessCommandLine has_any ("/updatedeploymentprovider", "/runhandlercomserver")) or  // Windows Update client proxy execution
-    (ProcessCommandLine has "rundll32.exe" and ProcessCommandLine has "comsvcs.dll" and ProcessCommandLine has "MiniDump") or  // LSASS dump via LOLBin
-    (ProcessCommandLine has "wevtutil.exe" and ProcessCommandLine has "cl") or  // log clear (split off from "qe" -> Info)
-    (ProcessCommandLine has "vssadmin.exe" and ProcessCommandLine has "delete" and ProcessCommandLine has "shadows") or  // ransomware precursor
+    // procdump -ma / lsass — full-memory dump targeting LSASS for credential theft (T1003.001).
+    // (Bug fix: original was bare "procdump OR mavinject", which fired on any procdump run and
+    // duplicated the mavinject clause.) Requires dump-relevant args before flagging High.
+    (ProcessCommandLine has "procdump.exe" and ProcessCommandLine has_any ("-ma", "lsass")) or
+    // regsvr32 /i:http — "Squiblydoo": remote scriptlet execution via scrobj.dll (T1218.010).
+    // No legit use case for fetching a remote scriptlet this way.
+    (ProcessCommandLine has "regsvr32.exe" and ProcessCommandLine matches regex "(?i).*\\/i:(http|https).*") or
+    // cmstp /s /au — Connection Manager profile installer abused for UAC bypass / INF-based
+    // proxy execution (T1218.003 / T1548.002). Near-zero benign interactive use.
+    (ProcessCommandLine has "cmstp.exe" and ProcessCommandLine has_any ("/s", "/au")) or
+    // odbcconf regsvr — loads/executes a DLL via the ODBC config tool, a regsvr32 sibling
+    // technique (T1218.008). Essentially always abuse.
+    (ProcessCommandLine has "odbcconf.exe" and ProcessCommandLine has "regsvr") or
+    // pcalua -a — Program Compatibility Assistant used as a launcher to proxy arbitrary
+    // execution (T1202). Rare/no legit reason to invoke it manually.
+    (ProcessCommandLine has "pcalua.exe" and ProcessCommandLine has "-a") or
+    // wuauclt /UpdateDeploymentProvider /RunHandlerComServer — Windows Update client coerced
+    // into loading an attacker DLL (T1218). Specific abuse switches, not normal WU behavior.
+    (ProcessCommandLine has "wuauclt.exe" and ProcessCommandLine has_any ("/updatedeploymentprovider", "/runhandlercomserver")) or
+    // rundll32 comsvcs.dll MiniDump — dumping LSASS via the built-in comsvcs MiniDump export
+    // (T1003.001). Pure credential-theft primitive; no benign use.
+    (ProcessCommandLine has "rundll32.exe" and ProcessCommandLine has "comsvcs.dll" and ProcessCommandLine has "MiniDump") or
+    // wevtutil cl — clearing an event log (T1070.001). Anti-forensics; split from the read-only
+    // "qe" form (which is Info). Clearing logs is essentially never routine.
+    (ProcessCommandLine has "wevtutil.exe" and ProcessCommandLine has "cl") or
+    // vssadmin delete shadows — destroying Volume Shadow Copies (T1490). Textbook ransomware
+    // pre-encryption step; distinct from the recon "list" form (Low).
+    (ProcessCommandLine has "vssadmin.exe" and ProcessCommandLine has "delete" and ProcessCommandLine has "shadows") or
+    // reg save HKLM\sam|security|system — dumping registry hives for offline credential
+    // extraction (T1003.002). No legitimate reason to export these hives from an endpoint.
     (ProcessCommandLine has "reg.exe" and ProcessCommandLine has "save"
-        and ProcessCommandLine has_any ("sam", "security", "system")) or  // offline hive dump
-    (ProcessCommandLine has_any ("psexec.exe", "psexec64.exe", "paexec.exe")) or  // lateral movement
-    (ProcessCommandLine has "wlrmdr.exe" and ProcessCommandLine has_all ("-s", "-f", "-t", "-m", "-a", "-u")) or  // wlrmdr abuse with full flag set
-    // Malspam / macro chain, v1 (disabled pending comparison against v2 below):
-    // Office app or browser (grandparent) -> cmd.exe (parent) -> script engine.
-    // Requiring a cmd.exe hop misses a macro/script spawning the LOLBin directly.
+        and ProcessCommandLine has_any ("sam", "security", "system")) or
+    // psexec/paexec — remote service execution for lateral movement (T1569.002 / T1021).
+    // Admin tools, but their presence/use on a workstation is high-signal for hands-on-keyboard.
+    (ProcessCommandLine has_any ("psexec.exe", "psexec64.exe", "paexec.exe")) or
+    // wlrmdr with all 6 flags (-s -f -t -m -a -u) — Windows Logon Reminder abused for
+    // masquerading / arbitrary command display (T1218). Essentially never invoked manually with
+    // that full flag set, so any hit is high-signal.
+    (ProcessCommandLine has "wlrmdr.exe" and ProcessCommandLine has_all ("-s", "-f", "-t", "-m", "-a", "-u")) or
+    // --- malspam / macro chain ---
+    // v1 (disabled pending comparison against v2 below): Office/browser (grandparent) ->
+    // cmd.exe (parent) -> script engine. Requiring a cmd.exe hop misses a macro/script that
+    // spawns the LOLBin directly, hence v2.
     // (InitiatingProcessParentFileName in~ ("winword.exe", "excel.exe", "powerpnt.exe", "outlook.exe",
     //         "onenote.exe", "msaccess.exe", "mspub.exe", "visio.exe",
     //         "chrome.exe", "msedge.exe", "firefox.exe", "iexplore.exe", "brave.exe")
     //     and InitiatingProcessFileName =~ "cmd.exe"
     //     and FileName in~ ("powershell.exe", "pwsh.exe", "wscript.exe", "cscript.exe", "mshta.exe")) or
     //
-    // Malspam / macro chain, v2 (testing): direct parent -> child, no cmd.exe intermediary required.
-    // Scoped to document apps + archivers only — these have the lowest legitimate-explanation
-    // rate for directly spawning a LOLBin (classic malicious-attachment/macro chain).
-    // Outlook and browsers moved to Medium below: protocol handlers, downloads, and add-ins
-    // make them spawn child processes routinely, which made this noisy as originally written.
-    // explorer.exe intentionally excluded from suspicious parents (normal file-association
-    // launches, consistent with the rundll32 rule above) — the source query included it,
-    // which would be too noisy.
-    // RunAction.vbs is the contentACCESS Outlook add-in (legit), excluded below.
+    // v2 (testing): direct parent -> child, no cmd.exe intermediary (T1566.001 / T1204.002).
+    // Scoped to document apps + archivers + script hosts only — these have the lowest
+    // legitimate-explanation rate for directly spawning a LOLBin (classic malicious-attachment/
+    // macro chain). Outlook and browsers were moved to Medium (protocol handlers, downloads, and
+    // add-ins make them spawn child processes routinely). explorer.exe intentionally excluded
+    // (normal file-association launches, consistent with the rundll32 rule). RunAction.vbs is the
+    // contentACCESS Outlook add-in (legit), excluded.
     (InitiatingProcessFileName in~ ("winword.exe", "excel.exe", "powerpnt.exe",
             "onenote.exe", "msaccess.exe", "mspub.exe", "visio.exe", "acrord32.exe",
             "7z.exe", "winrar.exe", "wscript.exe", "cscript.exe")
