@@ -1,0 +1,68 @@
+// ============================================================
+// LOLBin HUNTING — analyst-driven exploration, not wired to automation.
+//
+// Unlike lolbin-severity-tiers.kql (static argument patterns -> fixed
+// severity -> automation trigger), these queries surface candidates for
+// human review: rare/anomalous usage and corroborating network/file
+// activity. No Severity field — triage is the point of running these.
+// ============================================================
+
+
+// ------------------------------------------------------------
+// 1. Rare LOLBin usage per device — baseline-relative anomaly, not a
+//    static signature. Catches abuse you didn't write a rule for.
+// ------------------------------------------------------------
+let lolbins = dynamic(["certutil.exe", "bitsadmin.exe", "mshta.exe", "regsvr32.exe",
+    "installutil.exe", "regasm.exe", "regsvcs.exe", "msbuild.exe",
+    "cmstp.exe", "odbcconf.exe", "regsvcs.exe", "wuauclt.exe", "pcalua.exe"]);
+DeviceProcessEvents
+| where Timestamp > ago(30d)
+| where FileName in~ (lolbins)
+| summarize ExecCount = count(), Devices = dcount(DeviceId), SampleCmd = any(ProcessCommandLine)
+    by FileName, DeviceName
+| where ExecCount <= 3 and Devices == 1   // rare AND isolated to one host
+| sort by ExecCount asc
+
+
+// ------------------------------------------------------------
+// 2. LOLBin process correlated with a network connection in the same
+//    window — a certutil/bitsadmin/curl hit that also touches the
+//    network is a much stronger candidate than the process event alone.
+// ------------------------------------------------------------
+let lookback = 7d;
+let lolbins = dynamic(["certutil.exe", "bitsadmin.exe", "mshta.exe", "curl.exe", "wget.exe", "powershell.exe", "pwsh.exe"]);
+DeviceProcessEvents
+| where Timestamp > ago(lookback)
+| where FileName in~ (lolbins)
+| project ProcessTime = Timestamp, DeviceId, DeviceName, AccountName, FileName, ProcessCommandLine,
+    InitiatingProcessFileName, ReportId
+| join kind=inner (
+    DeviceNetworkEvents
+    | where Timestamp > ago(lookback)
+    | where ActionType in ("ConnectionSuccess", "ConnectionAttempted")
+    | project NetTime = Timestamp, DeviceId, RemoteIP, RemoteUrl, RemotePort, InitiatingProcessFileName
+) on DeviceId
+| where NetTime between (ProcessTime .. ProcessTime + 2m)   // network activity shortly after process start
+| project ProcessTime, DeviceName, AccountName, FileName, ProcessCommandLine, RemoteIP, RemoteUrl, RemotePort
+| sort by ProcessTime desc
+
+
+// ------------------------------------------------------------
+// 3. LOLBin process followed by a file write — confirms a download
+//    cradle actually dropped something, vs. a failed/aborted attempt.
+// ------------------------------------------------------------
+let lookback = 7d;
+let lolbins = dynamic(["certutil.exe", "bitsadmin.exe", "mshta.exe", "curl.exe", "wget.exe"]);
+DeviceProcessEvents
+| where Timestamp > ago(lookback)
+| where FileName in~ (lolbins)
+| project ProcessTime = Timestamp, DeviceId, DeviceName, AccountName, FileName, ProcessCommandLine
+| join kind=inner (
+    DeviceFileEvents
+    | where Timestamp > ago(lookback)
+    | where ActionType == "FileCreated"
+    | project FileTime = Timestamp, DeviceId, FileName = FileName, FolderPath, SHA256
+) on DeviceId
+| where FileTime between (ProcessTime .. ProcessTime + 1m)
+| project ProcessTime, DeviceName, AccountName, FileName, ProcessCommandLine, DroppedFile = FolderPath, SHA256
+| sort by ProcessTime desc

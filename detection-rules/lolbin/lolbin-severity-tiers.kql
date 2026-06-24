@@ -62,6 +62,7 @@ DeviceProcessEvents
         and not(ProcessCommandLine has_any ("-enc", "http", "https"))) or
     (ProcessCommandLine has_any ("nslookup.exe", "certutil.exe") and ProcessCommandLine has "-ping") or
     (ProcessCommandLine has "net.exe" and ProcessCommandLine has "use" and ProcessCommandLine has "/user:") or
+    (ProcessCommandLine has "forfiles.exe" and ProcessCommandLine has "/c") or  // indirect command execution, also used in legit batch/IT scripts
     // --- demoted from High: real technique but common legitimate use ---
     (ProcessCommandLine has "agentexecutor.exe" and ProcessCommandLine has "-powershell") or  // Intune IME PS proxy — noisy in Intune fleets
     (ProcessCommandLine has "attrib.exe" and ProcessCommandLine has_any ("+h", "-h", "+s", "-s")) or  // installers/backup tools toggle these too
@@ -102,15 +103,21 @@ DeviceProcessEvents
         and ProcessCommandLine has_any ("-urlcache -f -split", "-urlcache -split -f", "-verifyctl -f -split", "-decode", "-encode")
         and not(ProcessCommandLine has "EmpirumAgent")
         and not(InitiatingProcessCommandLine has "EmpirumAgent")) or  // EmpirumAgent (Matrix42 software deployment) uses certutil legitimately this way
-    (ProcessCommandLine has "powershell.exe" and ProcessCommandLine has "-enc") or  // fixed: original said cmd.exe; -enc is a PowerShell switch
+    (ProcessCommandLine has_any ("powershell.exe", "pwsh.exe")
+        and ProcessCommandLine has_any ("-enc", "-encodedcommand", "frombase64string", "downloadstring", "downloadfile", "net.webclient")) or  // merged richer encoded/download-cradle heuristic
+    (ProcessCommandLine has_any ("powershell.exe", "pwsh.exe") and ProcessCommandLine matches regex "(?i).*i(e|x)(.*?)\\(") or  // IEX / Invoke-Expression download cradle
     (ProcessCommandLine has "installutil.exe") or
+    (ProcessCommandLine has_any ("regasm.exe", "regsvcs.exe")) or  // same family as installutil.exe — unsigned .NET assembly execution
     (ProcessCommandLine has "mavinject.exe") or
     (ProcessCommandLine has "mshta.exe" and ProcessCommandLine has_any ("http", "https")) or
     (ProcessCommandLine has "msiexec.exe" and ProcessCommandLine matches regex "(?i).*(http|https).*") or
     (ProcessCommandLine has "netsh.exe" and ProcessCommandLine has "interface portproxy add") or
-    (ProcessCommandLine has "powershell.exe" and ProcessCommandLine matches regex "(?i).*i(e|x)(.*?)\\(") or  // IEX / Invoke-Expression download cradle
     (ProcessCommandLine has "procdump.exe" and ProcessCommandLine has_any ("-ma", "lsass")) or  // fixed: required dump-relevant args (was bare procdump OR mavinject dup)
     (ProcessCommandLine has "regsvr32.exe" and ProcessCommandLine matches regex "(?i).*\\/i:(http|https).*") or  // Squiblydoo
+    (ProcessCommandLine has "cmstp.exe" and ProcessCommandLine has_any ("/s", "/au")) or  // UAC-bypass / INF-based proxy execution
+    (ProcessCommandLine has "odbcconf.exe" and ProcessCommandLine has "regsvr") or  // DLL load via odbcconf, regsvr32 sibling technique
+    (ProcessCommandLine has "pcalua.exe" and ProcessCommandLine has "-a") or  // Program Compatibility Assistant proxy execution
+    (ProcessCommandLine has "wuauclt.exe" and ProcessCommandLine has_any ("/updatedeploymentprovider", "/runhandlercomserver")) or  // Windows Update client proxy execution
     (ProcessCommandLine has "rundll32.exe" and ProcessCommandLine has "comsvcs.dll" and ProcessCommandLine has "MiniDump") or  // LSASS dump via LOLBin
     (ProcessCommandLine has "wevtutil.exe" and ProcessCommandLine has "cl") or  // log clear (split off from "qe" -> Info)
     (ProcessCommandLine has "vssadmin.exe" and ProcessCommandLine has "delete" and ProcessCommandLine has "shadows") or  // ransomware precursor
@@ -118,13 +125,26 @@ DeviceProcessEvents
         and ProcessCommandLine has_any ("sam", "security", "system")) or  // offline hive dump
     (ProcessCommandLine has_any ("psexec.exe", "psexec64.exe", "paexec.exe")) or  // lateral movement
     (ProcessCommandLine has "wlrmdr.exe" and ProcessCommandLine has_all ("-s", "-f", "-t", "-m", "-a", "-u")) or  // wlrmdr abuse with full flag set
-    // Malspam / macro chain: Office app or browser (grandparent) -> cmd.exe (parent) -> script engine.
-    // This specific lineage has very little legitimate explanation, unlike bare cmd->PS (now Info).
-    (InitiatingProcessParentFileName in~ ("winword.exe", "excel.exe", "powerpnt.exe", "outlook.exe",
-            "onenote.exe", "msaccess.exe", "mspub.exe", "visio.exe",
+    // Malspam / macro chain, v1 (disabled pending comparison against v2 below):
+    // Office app or browser (grandparent) -> cmd.exe (parent) -> script engine.
+    // Requiring a cmd.exe hop misses a macro/script spawning the LOLBin directly.
+    // (InitiatingProcessParentFileName in~ ("winword.exe", "excel.exe", "powerpnt.exe", "outlook.exe",
+    //         "onenote.exe", "msaccess.exe", "mspub.exe", "visio.exe",
+    //         "chrome.exe", "msedge.exe", "firefox.exe", "iexplore.exe", "brave.exe")
+    //     and InitiatingProcessFileName =~ "cmd.exe"
+    //     and FileName in~ ("powershell.exe", "pwsh.exe", "wscript.exe", "cscript.exe", "mshta.exe")) or
+    //
+    // Malspam / macro chain, v2 (testing): direct parent -> child, no cmd.exe intermediary required.
+    // Broader net — also catches archivers and a wider LOLBin child list. explorer.exe intentionally
+    // excluded from suspicious parents (normal file-association launches, consistent with the
+    // rundll32 rule above) — the source query included it, which would be too noisy.
+    (InitiatingProcessFileName in~ ("winword.exe", "excel.exe", "powerpnt.exe", "outlook.exe",
+            "onenote.exe", "msaccess.exe", "mspub.exe", "visio.exe", "acrord32.exe",
+            "7z.exe", "winrar.exe", "wscript.exe", "cscript.exe",
             "chrome.exe", "msedge.exe", "firefox.exe", "iexplore.exe", "brave.exe")
-        and InitiatingProcessFileName =~ "cmd.exe"
-        and FileName in~ ("powershell.exe", "pwsh.exe", "wscript.exe", "cscript.exe", "mshta.exe"))
+        and FileName in~ ("certutil.exe", "bitsadmin.exe", "mshta.exe", "rundll32.exe",
+            "regsvr32.exe", "wscript.exe", "cscript.exe", "powershell.exe", "pwsh.exe",
+            "curl.exe", "msiexec.exe", "installutil.exe", "wmic.exe", "msbuild.exe"))
 | extend Severity = "High"
 | project Timestamp, Severity, DeviceName, AccountName, ProcessCommandLine, FileName, InitiatingProcessFileName, InitiatingProcessParentFileName
 | order by Timestamp desc
