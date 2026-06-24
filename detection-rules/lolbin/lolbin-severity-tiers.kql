@@ -1,0 +1,101 @@
+// ============================================================
+// 1. INFO — context only, expected admin/BAU activity
+// ============================================================
+DeviceProcessEvents
+| where Timestamp > ago(1d)
+| where
+    (ProcessCommandLine has "whoami.exe" and ProcessCommandLine has_any ("/priv", "/groups")) or
+    (ProcessCommandLine has "arp.exe" and ProcessCommandLine has "/a") or
+    (ProcessCommandLine has "ipconfig.exe" and ProcessCommandLine has "/displaydns") or
+    (ProcessCommandLine has "netstat.exe" and ProcessCommandLine has_any ("-an", "-o")) or
+    // wevtutil read-only ops (query/get-log/enum-logs) split out from "cl" (clear = High)
+    (ProcessCommandLine has "wevtutil.exe" and ProcessCommandLine has_any ("qe", "gl", "el"))
+| extend Severity = "Info"
+| project Timestamp, Severity, DeviceName, AccountName, ProcessCommandLine, InitiatingProcessFileName, InitiatingProcessParentFileName
+| order by Timestamp desc
+
+
+// ============================================================
+// 2. LOW — unusual tooling / recon, low confidence of intent
+// ============================================================
+DeviceProcessEvents
+| where Timestamp > ago(1d)
+| where
+    (ProcessCommandLine has "dnscmd.exe") or
+    (ProcessCommandLine has "nmap.exe") or
+    (ProcessCommandLine has "systeminfo.exe") or
+    (ProcessCommandLine has "nltest.exe") or
+    (ProcessCommandLine has "tasklist.exe" and ProcessCommandLine has_any ("/svc", "/v")) or
+    (ProcessCommandLine has_any ("qwinsta.exe", "query.exe") and ProcessCommandLine has "user") or
+    (ProcessCommandLine has "net.exe" and ProcessCommandLine has_any ("view", "group", "user")
+        and not(ProcessCommandLine has "/add")) or
+    (ProcessCommandLine has "vssadmin.exe" and ProcessCommandLine has "list")
+| extend Severity = "Low"
+| project Timestamp, Severity, DeviceName, AccountName, ProcessCommandLine, InitiatingProcessFileName, InitiatingProcessParentFileName
+| order by Timestamp desc
+
+
+// ============================================================
+// 3. MEDIUM — deliberate staging / persistence / cred-access setup
+// ============================================================
+DeviceProcessEvents
+| where Timestamp > ago(1d)
+| where
+    (ProcessCommandLine has "certutil.exe" and ProcessCommandLine has "-decode"
+        and not(ProcessCommandLine has "urlcache")) or
+    (ProcessCommandLine has "wmic.exe" and ProcessCommandLine has_all ("process", "call", "create")) or
+    (ProcessCommandLine has "schtasks.exe" and ProcessCommandLine has "/create") or
+    (ProcessCommandLine has "reg.exe" and ProcessCommandLine has "add"
+        and ProcessCommandLine has_any ("\\Run", "\\RunOnce")) or
+    (ProcessCommandLine has "powershell.exe" and ProcessCommandLine has_any ("-nop", "-w hidden", "-windowstyle hidden", "-ep bypass", "-executionpolicy bypass")
+        and not(ProcessCommandLine has_any ("-enc", "http", "https"))) or
+    (ProcessCommandLine has_any ("nslookup.exe", "certutil.exe") and ProcessCommandLine has "-ping") or
+    (ProcessCommandLine has "net.exe" and ProcessCommandLine has "use" and ProcessCommandLine has "/user:")
+| extend Severity = "Medium"
+| project Timestamp, Severity, DeviceName, AccountName, ProcessCommandLine, InitiatingProcessFileName, InitiatingProcessParentFileName
+| order by Timestamp desc
+
+
+// ============================================================
+// 4. HIGH — execution / dump / destroy / exfil / lateral move
+// ============================================================
+DeviceProcessEvents
+| where Timestamp > ago(1d)
+| where
+    (ProcessCommandLine has "agentexecutor.exe" and ProcessCommandLine has "-powershell") or
+    (ProcessCommandLine has "attrib.exe" and ProcessCommandLine has_any ("+h", "-h", "+s", "-s")) or
+    (ProcessCommandLine has "bcdedit.exe" and ProcessCommandLine has_any ("/set", "/deletevalue")) or
+    (ProcessCommandLine has "bitsadmin.exe" and ProcessCommandLine has_any ("transfer", "download")) or
+    (ProcessCommandLine has "certutil.exe" and ProcessCommandLine matches regex "(?i).*urlcache.*split.*f.*") or
+    (ProcessCommandLine has "powershell.exe" and ProcessCommandLine has "-enc") or  // fixed: was cmd.exe
+    (ProcessCommandLine has "installutil.exe") or
+    (ProcessCommandLine has "mavinject.exe") or
+    (ProcessCommandLine has "mshta.exe" and ProcessCommandLine has_any ("http", "https")) or
+    (ProcessCommandLine has "msiexec.exe" and ProcessCommandLine matches regex "(?i).*(http|https).*") or
+    (ProcessCommandLine has "msbuild.exe") or
+    (ProcessCommandLine has "netsh.exe" and ProcessCommandLine has "interface portproxy add") or
+    (ProcessCommandLine has "powershell.exe" and ProcessCommandLine matches regex "(?i).*i(e|x)(.*?)\\(") or
+    (ProcessCommandLine in ("curl.exe", "wget.exe")
+        and ProcessCommandLine has_any ("-o", "--output", "-d", "--data")) or
+    (ProcessCommandLine has "procdump.exe" and ProcessCommandLine has_any ("-ma", "lsass")) or  // fixed: required dump-relevant args
+    (ProcessCommandLine has "regsvr32.exe" and ProcessCommandLine matches regex "(?i).*\\/i:(http|https).*") or
+    (ProcessCommandLine has "robocopy.exe" and ProcessCommandLine has_any ("/mir", "/e", "/copyall")) or
+    (ProcessCommandLine has "rundll32.exe" and ProcessCommandLine has_any ("javascript:", "vbscript:", "RunHTMLApplication")) or
+    (ProcessCommandLine has "rundll32.exe" and ProcessCommandLine has "comsvcs.dll" and ProcessCommandLine has "MiniDump") or  // new: LSASS dump via LOLBin
+    (ProcessCommandLine has "sc.exe" and ProcessCommandLine has_any ("create", "config")) or
+    (ProcessCommandLine has "wevtutil.exe" and ProcessCommandLine has "cl") or  // fixed: split off from "qe" (now Info)
+    (ProcessCommandLine has "vssadmin.exe" and ProcessCommandLine has "delete" and ProcessCommandLine has "shadows") or  // new: ransomware precursor
+    (ProcessCommandLine has "reg.exe" and ProcessCommandLine has "save"
+        and ProcessCommandLine has_any ("sam", "security", "system")) or  // new: offline hive dump
+    (ProcessCommandLine has_any ("psexec.exe", "psexec64.exe", "paexec.exe")) or  // new: lateral movement
+    (ProcessCommandLine has "wlrmdr.exe" and ProcessCommandLine has_all ("-s", "-f", "-t", "-m", "-a", "-u")) or
+    (ProcessCommandLine in ("perl.exe", "python.exe", "ruby.exe", "java.exe")
+        and ProcessCommandLine matches regex "(?i).*(http|https|base64|shellcode|obfuscate|invoke|payload).*"
+        and not(ProcessCommandLine has_any ("\\AppData\\Roaming\\XNP\\lsp-home", "ElsterAuthenticator", "BNOTK SAK lite"))) or
+    (InitiatingProcessFileName == "cmd.exe" and FileName in ("powershell.exe", "wscript.exe", "cscript.exe")
+        and not(InitiatingProcessParentFileName contains "ServiceShell.exe")
+        and not(ProcessCommandLine has 'powershell.exe -NoProfile -WindowStyle hidden -ExecutionPolicy Bypass -File "C:\\ProgramData\\Scripts\\CompanyPortalStartup\\LaunchCompanyPortal.ps1"')
+        and not(ProcessCommandLine has 'powershell.exe -NoProfile -WindowStyle hidden -File "C:\\ProgramData\\Scripts\\CompanyPortalStartup\\LaunchCompanyPortal.ps1"'))
+| extend Severity = "High"
+| project Timestamp, Severity, DeviceName, AccountName, ProcessCommandLine, InitiatingProcessFileName, InitiatingProcessParentFileName
+| order by Timestamp desc
