@@ -72,7 +72,17 @@ DeviceProcessEvents
     (ProcessCommandLine has "sc.exe" and ProcessCommandLine has_any ("create", "config")) or  // escalate to High when binPath -> powershell/cmd/temp
     (ProcessCommandLine in ("perl.exe", "python.exe", "ruby.exe", "java.exe")
         and ProcessCommandLine matches regex "(?i).*(http|https|base64|shellcode|obfuscate|invoke|payload).*"  // "invoke"/"payload" are common benign words
-        and not(ProcessCommandLine has_any ("\\AppData\\Roaming\\XNP\\lsp-home", "ElsterAuthenticator", "BNOTK SAK lite")))
+        and not(ProcessCommandLine has_any ("\\AppData\\Roaming\\XNP\\lsp-home", "ElsterAuthenticator", "BNOTK SAK lite"))) or
+    // pending bake-in: confirm the exclusion list below is exhaustive for this env before promoting to High
+    (FileName == "rundll32.exe"
+        and ProcessCommandLine has_any ("javascript:", "vbscript:", "RunHTMLApplication", "javascript", "vbscript", ".js", ".vbs", "mshtml")
+        and InitiatingProcessFileName != "explorer.exe"  // normal file-association launches
+        and InitiatingProcessAccountName has_any ("lokaler dienst")  // restrict to Local Service context — rare/unusual for user-driven mshtml launches
+        and not(ProcessCommandLine has_any ("Druckerauswahl.vbs", "js.ui-portal.de", "use.typekit.net"))  // known-benign env scripts/domains
+        and not(
+            ProcessCommandLine has_all ("davclnt.dll,DavSetCookie", ".js", "http")
+            and InitiatingProcessVersionInfoInternalFileName has "svchost.exe"
+        ))  // benign WebClient/WebDAV redirector cookie behavior
 | extend Severity = "Medium"
 | project Timestamp, Severity, DeviceName, AccountName, ProcessCommandLine, FileName, InitiatingProcessFileName, InitiatingProcessParentFileName
 | order by Timestamp desc
@@ -101,15 +111,6 @@ DeviceProcessEvents
     (ProcessCommandLine has "powershell.exe" and ProcessCommandLine matches regex "(?i).*i(e|x)(.*?)\\(") or  // IEX / Invoke-Expression download cradle
     (ProcessCommandLine has "procdump.exe" and ProcessCommandLine has_any ("-ma", "lsass")) or  // fixed: required dump-relevant args (was bare procdump OR mavinject dup)
     (ProcessCommandLine has "regsvr32.exe" and ProcessCommandLine matches regex "(?i).*\\/i:(http|https).*") or  // Squiblydoo
-    (FileName == "rundll32.exe"
-        and ProcessCommandLine has_any ("javascript:", "vbscript:", "RunHTMLApplication", "javascript", "vbscript", ".js", ".vbs", "mshtml")
-        and InitiatingProcessFileName != "explorer.exe"  // normal file-association launches
-        and InitiatingProcessAccountName has_any ("lokaler dienst")  // restrict to Local Service context — rare/unusual for user-driven mshtml launches
-        and not(ProcessCommandLine has_any ("Druckerauswahl.vbs", "js.ui-portal.de", "use.typekit.net"))  // known-benign env scripts/domains
-        and not(
-            ProcessCommandLine has_all ("davclnt.dll,DavSetCookie", ".js", "http")
-            and InitiatingProcessVersionInfoInternalFileName has "svchost.exe"
-        )) or  // benign WebClient/WebDAV redirector cookie behavior
     (ProcessCommandLine has "rundll32.exe" and ProcessCommandLine has "comsvcs.dll" and ProcessCommandLine has "MiniDump") or  // LSASS dump via LOLBin
     (ProcessCommandLine has "wevtutil.exe" and ProcessCommandLine has "cl") or  // log clear (split off from "qe" -> Info)
     (ProcessCommandLine has "vssadmin.exe" and ProcessCommandLine has "delete" and ProcessCommandLine has "shadows") or  // ransomware precursor
