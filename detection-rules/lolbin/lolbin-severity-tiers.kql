@@ -9,9 +9,19 @@ DeviceProcessEvents
     (ProcessCommandLine has "ipconfig.exe" and ProcessCommandLine has "/displaydns") or
     (ProcessCommandLine has "netstat.exe" and ProcessCommandLine has_any ("-an", "-o")) or
     // wevtutil read-only ops (query/get-log/enum-logs) split out from "cl" (clear = High)
-    (ProcessCommandLine has "wevtutil.exe" and ProcessCommandLine has_any ("qe", "gl", "el"))
+    (ProcessCommandLine has "wevtutil.exe" and ProcessCommandLine has_any ("qe", "gl", "el")) or
+    // cmd.exe spawning a script engine — extremely common (RMM, GPO/logon scripts,
+    // deployers, scheduled tasks). Bare lineage with no other discriminator is context-only;
+    // the malicious malspam variant (Office/browser grandparent) lives in the High rule.
+    // Bug fix: original used not(... !~ ...) double-negation, which required the command line
+    // to equal BOTH known-good CompanyPortal strings at once (impossible) — collapsed to a
+    // plain exclusion of either known-good launcher.
+    (InitiatingProcessFileName == "cmd.exe" and FileName in ("powershell.exe", "wscript.exe", "cscript.exe")
+        and not(InitiatingProcessParentFileName contains "ServiceShell.exe")
+        and not(ProcessCommandLine has 'powershell.exe -NoProfile -WindowStyle hidden -ExecutionPolicy Bypass -File "C:\\ProgramData\\Scripts\\CompanyPortalStartup\\LaunchCompanyPortal.ps1"')
+        and not(ProcessCommandLine has 'powershell.exe -NoProfile -WindowStyle hidden -File "C:\\ProgramData\\Scripts\\CompanyPortalStartup\\LaunchCompanyPortal.ps1"'))
 | extend Severity = "Info"
-| project Timestamp, Severity, DeviceName, AccountName, ProcessCommandLine, InitiatingProcessFileName, InitiatingProcessParentFileName
+| project Timestamp, Severity, DeviceName, AccountName, ProcessCommandLine, FileName, InitiatingProcessFileName, InitiatingProcessParentFileName
 | order by Timestamp desc
 
 
@@ -31,16 +41,19 @@ DeviceProcessEvents
         and not(ProcessCommandLine has "/add")) or
     (ProcessCommandLine has "vssadmin.exe" and ProcessCommandLine has "list")
 | extend Severity = "Low"
-| project Timestamp, Severity, DeviceName, AccountName, ProcessCommandLine, InitiatingProcessFileName, InitiatingProcessParentFileName
+| project Timestamp, Severity, DeviceName, AccountName, ProcessCommandLine, FileName, InitiatingProcessFileName, InitiatingProcessParentFileName
 | order by Timestamp desc
 
 
 // ============================================================
-// 3. MEDIUM — deliberate staging / persistence / cred-access setup
+// 3. MEDIUM — deliberate staging / persistence / cred-access setup,
+//             or real technique with frequent benign explanations
+//             (needs a second signal / human review to escalate)
 // ============================================================
 DeviceProcessEvents
 | where Timestamp > ago(1d)
 | where
+    // --- staging / persistence / cred-access setup ---
     (ProcessCommandLine has "certutil.exe" and ProcessCommandLine has "-decode"
         and not(ProcessCommandLine has "urlcache")) or
     (ProcessCommandLine has "wmic.exe" and ProcessCommandLine has_all ("process", "call", "create")) or
@@ -50,52 +63,58 @@ DeviceProcessEvents
     (ProcessCommandLine has "powershell.exe" and ProcessCommandLine has_any ("-nop", "-w hidden", "-windowstyle hidden", "-ep bypass", "-executionpolicy bypass")
         and not(ProcessCommandLine has_any ("-enc", "http", "https"))) or
     (ProcessCommandLine has_any ("nslookup.exe", "certutil.exe") and ProcessCommandLine has "-ping") or
-    (ProcessCommandLine has "net.exe" and ProcessCommandLine has "use" and ProcessCommandLine has "/user:")
+    (ProcessCommandLine has "net.exe" and ProcessCommandLine has "use" and ProcessCommandLine has "/user:") or
+    // --- demoted from High: real technique but common legitimate use ---
+    (ProcessCommandLine has "agentexecutor.exe" and ProcessCommandLine has "-powershell") or  // Intune IME PS proxy — noisy in Intune fleets
+    (ProcessCommandLine has "attrib.exe" and ProcessCommandLine has_any ("+h", "-h", "+s", "-s")) or  // installers/backup tools toggle these too
+    (ProcessCommandLine has "msbuild.exe") or  // inline-task bypass, but BAU on dev/build hosts
+    (ProcessCommandLine in ("curl.exe", "wget.exe")
+        and ProcessCommandLine has_any ("-o", "--output", "-d", "--data")) or  // legit automation downloads/posts too
+    (ProcessCommandLine has "robocopy.exe" and ProcessCommandLine has_any ("/mir", "/e", "/copyall")) or  // also normal backup/admin tool
+    (ProcessCommandLine has "sc.exe" and ProcessCommandLine has_any ("create", "config")) or  // escalate to High when binPath -> powershell/cmd/temp
+    (ProcessCommandLine in ("perl.exe", "python.exe", "ruby.exe", "java.exe")
+        and ProcessCommandLine matches regex "(?i).*(http|https|base64|shellcode|obfuscate|invoke|payload).*"  // "invoke"/"payload" are common benign words
+        and not(ProcessCommandLine has_any ("\\AppData\\Roaming\\XNP\\lsp-home", "ElsterAuthenticator", "BNOTK SAK lite")))
 | extend Severity = "Medium"
-| project Timestamp, Severity, DeviceName, AccountName, ProcessCommandLine, InitiatingProcessFileName, InitiatingProcessParentFileName
+| project Timestamp, Severity, DeviceName, AccountName, ProcessCommandLine, FileName, InitiatingProcessFileName, InitiatingProcessParentFileName
 | order by Timestamp desc
 
 
 // ============================================================
 // 4. HIGH — execution / dump / destroy / exfil / lateral move
+//           (rare/no legitimate explanation, or the action itself
+//            is the malicious step)
 // ============================================================
 DeviceProcessEvents
 | where Timestamp > ago(1d)
 | where
-    (ProcessCommandLine has "agentexecutor.exe" and ProcessCommandLine has "-powershell") or
-    (ProcessCommandLine has "attrib.exe" and ProcessCommandLine has_any ("+h", "-h", "+s", "-s")) or
     (ProcessCommandLine has "bcdedit.exe" and ProcessCommandLine has_any ("/set", "/deletevalue")) or
     (ProcessCommandLine has "bitsadmin.exe" and ProcessCommandLine has_any ("transfer", "download")) or
     (ProcessCommandLine has "certutil.exe" and ProcessCommandLine matches regex "(?i).*urlcache.*split.*f.*") or
-    (ProcessCommandLine has "powershell.exe" and ProcessCommandLine has "-enc") or  // fixed: was cmd.exe
+    (ProcessCommandLine has "powershell.exe" and ProcessCommandLine has "-enc") or  // fixed: original said cmd.exe; -enc is a PowerShell switch
     (ProcessCommandLine has "installutil.exe") or
     (ProcessCommandLine has "mavinject.exe") or
     (ProcessCommandLine has "mshta.exe" and ProcessCommandLine has_any ("http", "https")) or
     (ProcessCommandLine has "msiexec.exe" and ProcessCommandLine matches regex "(?i).*(http|https).*") or
-    (ProcessCommandLine has "msbuild.exe") or
     (ProcessCommandLine has "netsh.exe" and ProcessCommandLine has "interface portproxy add") or
-    (ProcessCommandLine has "powershell.exe" and ProcessCommandLine matches regex "(?i).*i(e|x)(.*?)\\(") or
-    (ProcessCommandLine in ("curl.exe", "wget.exe")
-        and ProcessCommandLine has_any ("-o", "--output", "-d", "--data")) or
-    (ProcessCommandLine has "procdump.exe" and ProcessCommandLine has_any ("-ma", "lsass")) or  // fixed: required dump-relevant args
-    (ProcessCommandLine has "regsvr32.exe" and ProcessCommandLine matches regex "(?i).*\\/i:(http|https).*") or
-    (ProcessCommandLine has "robocopy.exe" and ProcessCommandLine has_any ("/mir", "/e", "/copyall")) or
+    (ProcessCommandLine has "powershell.exe" and ProcessCommandLine matches regex "(?i).*i(e|x)(.*?)\\(") or  // IEX / Invoke-Expression download cradle
+    (ProcessCommandLine has "procdump.exe" and ProcessCommandLine has_any ("-ma", "lsass")) or  // fixed: required dump-relevant args (was bare procdump OR mavinject dup)
+    (ProcessCommandLine has "regsvr32.exe" and ProcessCommandLine matches regex "(?i).*\\/i:(http|https).*") or  // Squiblydoo
     (ProcessCommandLine has "rundll32.exe" and ProcessCommandLine has_any ("javascript:", "vbscript:", "RunHTMLApplication")) or
-    (ProcessCommandLine has "rundll32.exe" and ProcessCommandLine has "comsvcs.dll" and ProcessCommandLine has "MiniDump") or  // new: LSASS dump via LOLBin
-    (ProcessCommandLine has "sc.exe" and ProcessCommandLine has_any ("create", "config")) or
-    (ProcessCommandLine has "wevtutil.exe" and ProcessCommandLine has "cl") or  // fixed: split off from "qe" (now Info)
-    (ProcessCommandLine has "vssadmin.exe" and ProcessCommandLine has "delete" and ProcessCommandLine has "shadows") or  // new: ransomware precursor
+    (ProcessCommandLine has "rundll32.exe" and ProcessCommandLine has "comsvcs.dll" and ProcessCommandLine has "MiniDump") or  // LSASS dump via LOLBin
+    (ProcessCommandLine has "wevtutil.exe" and ProcessCommandLine has "cl") or  // log clear (split off from "qe" -> Info)
+    (ProcessCommandLine has "vssadmin.exe" and ProcessCommandLine has "delete" and ProcessCommandLine has "shadows") or  // ransomware precursor
     (ProcessCommandLine has "reg.exe" and ProcessCommandLine has "save"
-        and ProcessCommandLine has_any ("sam", "security", "system")) or  // new: offline hive dump
-    (ProcessCommandLine has_any ("psexec.exe", "psexec64.exe", "paexec.exe")) or  // new: lateral movement
-    (ProcessCommandLine has "wlrmdr.exe" and ProcessCommandLine has_all ("-s", "-f", "-t", "-m", "-a", "-u")) or
-    (ProcessCommandLine in ("perl.exe", "python.exe", "ruby.exe", "java.exe")
-        and ProcessCommandLine matches regex "(?i).*(http|https|base64|shellcode|obfuscate|invoke|payload).*"
-        and not(ProcessCommandLine has_any ("\\AppData\\Roaming\\XNP\\lsp-home", "ElsterAuthenticator", "BNOTK SAK lite"))) or
-    (InitiatingProcessFileName == "cmd.exe" and FileName in ("powershell.exe", "wscript.exe", "cscript.exe")
-        and not(InitiatingProcessParentFileName contains "ServiceShell.exe")
-        and not(ProcessCommandLine has 'powershell.exe -NoProfile -WindowStyle hidden -ExecutionPolicy Bypass -File "C:\\ProgramData\\Scripts\\CompanyPortalStartup\\LaunchCompanyPortal.ps1"')
-        and not(ProcessCommandLine has 'powershell.exe -NoProfile -WindowStyle hidden -File "C:\\ProgramData\\Scripts\\CompanyPortalStartup\\LaunchCompanyPortal.ps1"'))
+        and ProcessCommandLine has_any ("sam", "security", "system")) or  // offline hive dump
+    (ProcessCommandLine has_any ("psexec.exe", "psexec64.exe", "paexec.exe")) or  // lateral movement
+    (ProcessCommandLine has "wlrmdr.exe" and ProcessCommandLine has_all ("-s", "-f", "-t", "-m", "-a", "-u")) or  // wlrmdr abuse with full flag set
+    // Malspam / macro chain: Office app or browser (grandparent) -> cmd.exe (parent) -> script engine.
+    // This specific lineage has very little legitimate explanation, unlike bare cmd->PS (now Info).
+    (InitiatingProcessParentFileName in~ ("winword.exe", "excel.exe", "powerpnt.exe", "outlook.exe",
+            "onenote.exe", "msaccess.exe", "mspub.exe", "visio.exe",
+            "chrome.exe", "msedge.exe", "firefox.exe", "iexplore.exe", "brave.exe")
+        and InitiatingProcessFileName =~ "cmd.exe"
+        and FileName in~ ("powershell.exe", "pwsh.exe", "wscript.exe", "cscript.exe", "mshta.exe"))
 | extend Severity = "High"
-| project Timestamp, Severity, DeviceName, AccountName, ProcessCommandLine, InitiatingProcessFileName, InitiatingProcessParentFileName
+| project Timestamp, Severity, DeviceName, AccountName, ProcessCommandLine, FileName, InitiatingProcessFileName, InitiatingProcessParentFileName
 | order by Timestamp desc
