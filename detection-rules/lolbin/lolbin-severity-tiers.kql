@@ -97,8 +97,12 @@ DeviceProcessEvents
     // PowerShell with stealth flags (-nop/-w hidden/-ep bypass) but NO encoded/URL payload
     // (T1059.001). Hidden/bypass execution is suspicious, yet legit deployment scripts use the
     // same flags; the encoded/download variants are escalated to High, so this stays Medium.
+    // Exclusion: Microsoft Defender ELAM onboarding — installs the WdBoot.sys Early Launch
+    // Anti-Malware certificate via InstallELAMCertificateInfo (Add-Type P/Invoke). Legit but
+    // looks offensive. Anchored on TWO stable tokens to limit padding-based evasion.
     (ProcessCommandLine has "powershell.exe" and ProcessCommandLine has_any ("-nop", "-w hidden", "-windowstyle hidden", "-ep bypass", "-executionpolicy bypass")
-        and not(ProcessCommandLine has_any ("-enc", "http", "https"))) or
+        and not(ProcessCommandLine has_any ("-enc", "http", "https"))
+        and not(ProcessCommandLine has_all ("InstallELAMCertificateInfo", "WdBoot"))) or
     // nslookup/certutil -ping — repeated TXT/record lookups can be a DNS-tunneling precursor
     // (T1071.004), but also normal connectivity checks. Medium.
     (ProcessCommandLine has_any ("nslookup.exe", "certutil.exe") and ProcessCommandLine has "-ping") or
