@@ -24,13 +24,15 @@ DeviceProcessEvents
     // cmd.exe spawning a script engine — extremely common (RMM, GPO/logon scripts,
     // deployers, scheduled tasks). Bare lineage with no other discriminator is context-only;
     // the malicious malspam variant (Office/archiver parent) lives in the High rule.
-    // Bug fix: original used not(... !~ ...) double-negation, which required the command line
-    // to equal BOTH known-good CompanyPortal strings at once (impossible) — collapsed to a
-    // plain exclusion of either known-good launcher.
+    // Exclusion fix: the original two `has '<full command line>'` clauses were brittle —
+    // `has` term-matches poorly on long phrases with -, ", . separators, and the literal
+    // prefix (powershell.exe -NoProfile ...) often won't match because MDE stores the leading
+    // token as "powershell.exe" (quoted) or the full v1.0\powershell.exe path. Anchored instead
+    // on the one invariant token — the launcher script path — with contains. Single clause now
+    // covers both flag variants (with/without -ExecutionPolicy Bypass).
     (InitiatingProcessFileName == "cmd.exe" and FileName in ("powershell.exe", "wscript.exe", "cscript.exe")
         and not(InitiatingProcessParentFileName contains "ServiceShell.exe")
-        and not(ProcessCommandLine has 'powershell.exe -NoProfile -WindowStyle hidden -ExecutionPolicy Bypass -File "C:\\ProgramData\\Scripts\\CompanyPortalStartup\\LaunchCompanyPortal.ps1"')
-        and not(ProcessCommandLine has 'powershell.exe -NoProfile -WindowStyle hidden -File "C:\\ProgramData\\Scripts\\CompanyPortalStartup\\LaunchCompanyPortal.ps1"'))
+        and not(ProcessCommandLine contains @"CompanyPortalStartup\LaunchCompanyPortal.ps1"))
 | extend Severity = "Info"
 | project Timestamp, Severity, DeviceName, AccountName, ProcessCommandLine, FileName, InitiatingProcessFileName, InitiatingProcessParentFileName
 | order by Timestamp desc
