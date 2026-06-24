@@ -54,8 +54,6 @@ DeviceProcessEvents
 | where Timestamp > ago(1d)
 | where
     // --- staging / persistence / cred-access setup ---
-    (ProcessCommandLine has "certutil.exe" and ProcessCommandLine has "-decode"
-        and not(ProcessCommandLine has "urlcache")) or
     (ProcessCommandLine has "wmic.exe" and ProcessCommandLine has_all ("process", "call", "create")) or
     (ProcessCommandLine has "schtasks.exe" and ProcessCommandLine has "/create") or
     (ProcessCommandLine has "reg.exe" and ProcessCommandLine has "add"
@@ -90,7 +88,10 @@ DeviceProcessEvents
 | where
     (ProcessCommandLine has "bcdedit.exe" and ProcessCommandLine has_any ("/set", "/deletevalue")) or
     (ProcessCommandLine has "bitsadmin.exe" and ProcessCommandLine has_any ("transfer", "download")) or
-    (ProcessCommandLine has "certutil.exe" and ProcessCommandLine matches regex "(?i).*urlcache.*split.*f.*") or
+    (ProcessCommandLine has "certutil.exe"
+        and ProcessCommandLine has_any ("-urlcache -f -split", "-urlcache -split -f", "-verifyctl -f -split", "-decode", "-encode")
+        and not(ProcessCommandLine has "EmpirumAgent")
+        and not(InitiatingProcessCommandLine has "EmpirumAgent")) or  // EmpirumAgent (Matrix42 software deployment) uses certutil legitimately this way
     (ProcessCommandLine has "powershell.exe" and ProcessCommandLine has "-enc") or  // fixed: original said cmd.exe; -enc is a PowerShell switch
     (ProcessCommandLine has "installutil.exe") or
     (ProcessCommandLine has "mavinject.exe") or
@@ -100,7 +101,15 @@ DeviceProcessEvents
     (ProcessCommandLine has "powershell.exe" and ProcessCommandLine matches regex "(?i).*i(e|x)(.*?)\\(") or  // IEX / Invoke-Expression download cradle
     (ProcessCommandLine has "procdump.exe" and ProcessCommandLine has_any ("-ma", "lsass")) or  // fixed: required dump-relevant args (was bare procdump OR mavinject dup)
     (ProcessCommandLine has "regsvr32.exe" and ProcessCommandLine matches regex "(?i).*\\/i:(http|https).*") or  // Squiblydoo
-    (ProcessCommandLine has "rundll32.exe" and ProcessCommandLine has_any ("javascript:", "vbscript:", "RunHTMLApplication")) or
+    (FileName == "rundll32.exe"
+        and ProcessCommandLine has_any ("javascript:", "vbscript:", "RunHTMLApplication", "javascript", "vbscript", ".js", ".vbs", "mshtml")
+        and InitiatingProcessFileName != "explorer.exe"  // normal file-association launches
+        and InitiatingProcessAccountName has_any ("lokaler dienst")  // restrict to Local Service context — rare/unusual for user-driven mshtml launches
+        and not(ProcessCommandLine has_any ("Druckerauswahl.vbs", "js.ui-portal.de", "use.typekit.net"))  // known-benign env scripts/domains
+        and not(
+            ProcessCommandLine has_all ("davclnt.dll,DavSetCookie", ".js", "http")
+            and InitiatingProcessVersionInfoInternalFileName has "svchost.exe"
+        )) or  // benign WebClient/WebDAV redirector cookie behavior
     (ProcessCommandLine has "rundll32.exe" and ProcessCommandLine has "comsvcs.dll" and ProcessCommandLine has "MiniDump") or  // LSASS dump via LOLBin
     (ProcessCommandLine has "wevtutil.exe" and ProcessCommandLine has "cl") or  // log clear (split off from "qe" -> Info)
     (ProcessCommandLine has "vssadmin.exe" and ProcessCommandLine has "delete" and ProcessCommandLine has "shadows") or  // ransomware precursor
