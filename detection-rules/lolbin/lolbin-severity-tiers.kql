@@ -83,7 +83,16 @@ DeviceProcessEvents
         and not(
             ProcessCommandLine has_all ("davclnt.dll,DavSetCookie", ".js", "http")
             and InitiatingProcessVersionInfoInternalFileName has "svchost.exe"
-        ))  // benign WebClient/WebDAV redirector cookie behavior
+        )) or  // benign WebClient/WebDAV redirector cookie behavior
+    // demoted from the High malspam-chain test: Outlook and browsers spawn child processes
+    // routinely via protocol handlers, downloads, and add-ins — too noisy to treat as a
+    // direct-parent->LOLBin chain the way document apps/archivers are. Same RunAction.vbs
+    // (contentACCESS Outlook add-in) exclusion as the High-tier version.
+    (InitiatingProcessFileName in~ ("outlook.exe", "chrome.exe", "msedge.exe", "firefox.exe", "iexplore.exe", "brave.exe")
+        and FileName in~ ("certutil.exe", "bitsadmin.exe", "mshta.exe", "rundll32.exe",
+            "regsvr32.exe", "wscript.exe", "cscript.exe", "powershell.exe", "pwsh.exe",
+            "curl.exe", "msiexec.exe", "installutil.exe", "wmic.exe", "msbuild.exe")
+        and not(ProcessCommandLine contains "contentACCESSForm\\RunAction.vbs"))
 | extend Severity = "Medium"
 | project Timestamp, Severity, DeviceName, AccountName, ProcessCommandLine, FileName, InitiatingProcessFileName, InitiatingProcessParentFileName
 | order by Timestamp desc
@@ -135,16 +144,21 @@ DeviceProcessEvents
     //     and FileName in~ ("powershell.exe", "pwsh.exe", "wscript.exe", "cscript.exe", "mshta.exe")) or
     //
     // Malspam / macro chain, v2 (testing): direct parent -> child, no cmd.exe intermediary required.
-    // Broader net — also catches archivers and a wider LOLBin child list. explorer.exe intentionally
-    // excluded from suspicious parents (normal file-association launches, consistent with the
-    // rundll32 rule above) — the source query included it, which would be too noisy.
-    (InitiatingProcessFileName in~ ("winword.exe", "excel.exe", "powerpnt.exe", "outlook.exe",
+    // Scoped to document apps + archivers only — these have the lowest legitimate-explanation
+    // rate for directly spawning a LOLBin (classic malicious-attachment/macro chain).
+    // Outlook and browsers moved to Medium below: protocol handlers, downloads, and add-ins
+    // make them spawn child processes routinely, which made this noisy as originally written.
+    // explorer.exe intentionally excluded from suspicious parents (normal file-association
+    // launches, consistent with the rundll32 rule above) — the source query included it,
+    // which would be too noisy.
+    // RunAction.vbs is the contentACCESS Outlook add-in (legit), excluded below.
+    (InitiatingProcessFileName in~ ("winword.exe", "excel.exe", "powerpnt.exe",
             "onenote.exe", "msaccess.exe", "mspub.exe", "visio.exe", "acrord32.exe",
-            "7z.exe", "winrar.exe", "wscript.exe", "cscript.exe",
-            "chrome.exe", "msedge.exe", "firefox.exe", "iexplore.exe", "brave.exe")
+            "7z.exe", "winrar.exe", "wscript.exe", "cscript.exe")
         and FileName in~ ("certutil.exe", "bitsadmin.exe", "mshta.exe", "rundll32.exe",
             "regsvr32.exe", "wscript.exe", "cscript.exe", "powershell.exe", "pwsh.exe",
-            "curl.exe", "msiexec.exe", "installutil.exe", "wmic.exe", "msbuild.exe"))
+            "curl.exe", "msiexec.exe", "installutil.exe", "wmic.exe", "msbuild.exe")
+        and not(ProcessCommandLine contains "contentACCESSForm\\RunAction.vbs"))
 | extend Severity = "High"
 | project Timestamp, Severity, DeviceName, AccountName, ProcessCommandLine, FileName, InitiatingProcessFileName, InitiatingProcessParentFileName
 | order by Timestamp desc
