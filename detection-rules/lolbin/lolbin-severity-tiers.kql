@@ -20,19 +20,12 @@ DeviceProcessEvents
     (ProcessCommandLine has "netstat.exe" and ProcessCommandLine has_any ("-an", "-o")) or
     // wevtutil read-only ops: qe (query-events), gl (get-log), el (enum-logs) (T1654).
     // Reading logs is benign; the log-CLEAR variant "cl" is anti-forensics and lives in High.
-    (ProcessCommandLine has "wevtutil.exe" and ProcessCommandLine has_any ("qe", "gl", "el")) or
-    // cmd.exe spawning a script engine — extremely common (RMM, GPO/logon scripts,
-    // deployers, scheduled tasks). Bare lineage with no other discriminator is context-only;
-    // the malicious malspam variant (Office/archiver parent) lives in the High rule.
-    // Exclusion fix: the original two `has '<full command line>'` clauses were brittle —
-    // `has` term-matches poorly on long phrases with -, ", . separators, and the literal
-    // prefix (powershell.exe -NoProfile ...) often won't match because MDE stores the leading
-    // token as "powershell.exe" (quoted) or the full v1.0\powershell.exe path. Anchored instead
-    // on the one invariant token — the launcher script path — with contains. Single clause now
-    // covers both flag variants (with/without -ExecutionPolicy Bypass).
-    (InitiatingProcessFileName == "cmd.exe" and FileName in ("powershell.exe", "wscript.exe", "cscript.exe")
-        and not(InitiatingProcessParentFileName contains "ServiceShell.exe")
-        and not(ProcessCommandLine contains @"CompanyPortalStartup\LaunchCompanyPortal.ps1"))
+    (ProcessCommandLine has "wevtutil.exe" and ProcessCommandLine has_any ("qe", "gl", "el"))
+    // NOTE: the bare "cmd.exe -> powershell/wscript/cscript" lineage was removed — too benign
+    // without context (batch wrappers, logon scripts, RMM, installers all do this). The
+    // malicious variants are covered elsewhere (Office/archiver parent -> High; encoded/IEX/
+    // download cradle -> High; hidden/bypass flags -> Medium). Script-engine visibility for
+    // hunting now lives in lolbin-hunting.kql.
 | extend Severity = "Info"
 | project Timestamp, Severity, DeviceName, AccountName, ProcessCommandLine, FileName, InitiatingProcessFileName, InitiatingProcessParentFileName
 | order by Timestamp desc
@@ -137,13 +130,12 @@ DeviceProcessEvents
     // legit service install, so Medium; escalate to High only when the binPath points at
     // powershell/cmd or a temp/user path.
     (ProcessCommandLine has "sc.exe" and ProcessCommandLine has_any ("create", "config")) or
-    // Scripting-language interpreters + payload-ish keyword regex (T1059.006). Intent is
-    // high-confidence when it really is malware, but "invoke"/"payload" are common enough words
-    // in legitimate scripts/logs that the keyword match alone has real FP potential. Medium.
-    // Exclusions are known-good local apps (XNP LSP-home, ElsterAuthenticator, BNOTK SAK lite).
-    (ProcessCommandLine in ("perl.exe", "python.exe", "ruby.exe", "java.exe")
-        and ProcessCommandLine matches regex "(?i).*(http|https|base64|shellcode|obfuscate|invoke|payload).*"
-        and not(ProcessCommandLine has_any ("\\AppData\\Roaming\\XNP\\lsp-home", "ElsterAuthenticator", "BNOTK SAK lite"))) or
+    // NOTE: the scripting-language interpreter (perl/python/ruby/java) + payload-keyword clause
+    // was removed — low yield, high FP (invoke/payload/http appear constantly in legit interpreter
+    // command lines; java.exe especially). It also had a latent bug: `ProcessCommandLine in
+    // (...)` requires exact full-string equality, so it could never co-fire with the keyword
+    // regex. A fixed + tightened (FileName-based, narrower keywords, no java) version lives in
+    // lolbin-hunting.kql as an analyst hunt, not an alert.
     // rundll32 running script content (javascript:/vbscript:/.js/.vbs/mshtml) via signed binary
     // proxy (T1218.011). High-value technique, but pending bake-in here: confirm the exclusion
     // list below is exhaustive for this env before promoting to High. Scoped to the Local

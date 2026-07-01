@@ -66,3 +66,37 @@ DeviceProcessEvents
 | where FileTime between (ProcessTime .. ProcessTime + 1m)
 | project ProcessTime, DeviceName, AccountName, FileName, ProcessCommandLine, DroppedFile = FolderPath, SHA256
 | sort by ProcessTime desc
+
+
+// ------------------------------------------------------------
+// 4. cmd.exe spawning a script engine (T1059) — moved out of the tiered
+//    rules: far too benign as an alert (batch wrappers, logon scripts, RMM,
+//    installers). As a hunt it's still useful for eyeballing outliers, so
+//    surface it aggregated by command line rather than per-event, and drop
+//    the known-good CompanyPortal launcher.
+// ------------------------------------------------------------
+DeviceProcessEvents
+| where Timestamp > ago(7d)
+| where InitiatingProcessFileName == "cmd.exe"
+    and FileName in~ ("powershell.exe", "pwsh.exe", "wscript.exe", "cscript.exe")
+| where not(ProcessCommandLine contains @"CompanyPortalStartup\LaunchCompanyPortal.ps1")
+| summarize Count = count(), Devices = dcount(DeviceId), FirstSeen = min(Timestamp), LastSeen = max(Timestamp)
+    by FileName, ProcessCommandLine, InitiatingProcessParentFileName
+| sort by Count asc   // rarest command lines first — the interesting tail
+
+
+// ------------------------------------------------------------
+// 5. Interpreter (perl/python/ruby) running payload-ish content (T1059.006) —
+//    moved out of the tiered rules (low yield, high FP). Fixes the original
+//    latent bug (FileName-based, not ProcessCommandLine == "python.exe"),
+//    drops java.exe (enormous noisy command lines), and narrows the keyword
+//    list to genuinely-suspicious tokens (dropped bare invoke/payload/http).
+//    Known-good local apps excluded. Hunt only — triage the results.
+// ------------------------------------------------------------
+DeviceProcessEvents
+| where Timestamp > ago(7d)
+| where FileName in~ ("perl.exe", "python.exe", "ruby.exe")
+| where ProcessCommandLine matches regex @"(?i)(base64|shellcode|-e\s|exec\(|socket|/dev/tcp|frombase64|iex|invoke-expression|downloadstring)"
+| where not(ProcessCommandLine has_any ("\\AppData\\Roaming\\XNP\\lsp-home", "ElsterAuthenticator", "BNOTK SAK lite"))
+| project Timestamp, DeviceName, AccountName, FileName, ProcessCommandLine, InitiatingProcessFileName
+| sort by Timestamp desc
