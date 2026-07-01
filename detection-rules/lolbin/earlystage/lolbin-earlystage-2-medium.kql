@@ -1,0 +1,37 @@
+// Rule: LOLBin_EarlyStage_Medium
+// Dual-use techniques and light persistence — real signal, but common
+// benign explanations. Needs a second signal / human review to escalate.
+//
+// One of three early-stage severity splits (context-low / medium / high).
+// All three share the identical GLOBAL EXCLUSIONS header below — keep in sync.
+DeviceProcessEvents
+// === GLOBAL EXCLUSIONS v1 — keep identical across all LOLBin rules ===
+// (company-specific values redacted as "x"; restore before deploying)
+| where DeviceName startswith "X"
+| where not(InitiatingProcessAccountName has_any ("adm_", "Administrator", "system", "lokaler dienst", "defaultuser0", "devopsserviceuser", "System", "hmsupport"))
+| where isnotempty(InitiatingProcessAccountName)
+//| where not(InitiatingProcessFolderPath has_any ("C:\\Program Files (x86)\\Microsoft Visual Studio",
+//    "C:\\Program Files\\Microsoft Visual Studio\\2022\\Professional\\"))
+| where not(InitiatingProcessParentFileName == "x" and (InitiatingProcessCommandLine contains "x" and InitiatingProcessCommandLine contains "x"))
+| where not(ProcessCommandLine matches regex @"x")
+// === END GLOBAL EXCLUSIONS v1 ===
+| where
+    (1 == 2)   // inert seed — every detection below starts with `or`, so any line toggles freely
+    or (ProcessCommandLine has "agentexecutor.exe" and ProcessCommandLine has "-powershell")
+    or (ProcessCommandLine has "attrib.exe" and ProcessCommandLine has_any ("+h", "-h", "+s", "-s"))
+    or (ProcessCommandLine has "msbuild.exe")
+    // FIX: FileName in~ (was ProcessCommandLine in (...) exact-match)
+    or (FileName in~ ("curl.exe", "wget.exe") and ProcessCommandLine has_any ("-o", "--output", "-d", "--data"))
+    or (ProcessCommandLine has "robocopy.exe" and ProcessCommandLine has_any ("/mir", "/e", "/copyall"))
+    or (ProcessCommandLine has "sc.exe" and ProcessCommandLine has_any ("create", "config"))
+    // FIX: FileName in~ (was ProcessCommandLine in (...)). Restore your interpreter/java FP
+    // exclusions in the has_any ("x") list below.
+    or (FileName in~ ("perl.exe", "python.exe", "ruby.exe", "java.exe")
+        and ProcessCommandLine matches regex "(?i).*(http|https|base64|shellcode|obfuscate|invoke|payload).*"
+        and not(ProcessCommandLine has_any ("x")))
+    // NEW: light persistence (early-stage coverage)
+    or (ProcessCommandLine has "schtasks.exe" and ProcessCommandLine has "/create")
+    or (ProcessCommandLine has "reg.exe" and ProcessCommandLine has "add" and ProcessCommandLine has_any ("\\Run", "\\RunOnce"))
+    or (ProcessCommandLine has "wmic.exe" and ProcessCommandLine has_all ("process", "call", "create"))
+| extend Severity = "Medium"
+| order by Timestamp desc

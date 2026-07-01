@@ -1,0 +1,51 @@
+// Rule: LOLBin_EarlyStage_High
+// Execution / defense-evasion / initial-access chains — rare or no benign
+// explanation, or the action itself is the malicious step. Safe to wire to
+// the most aggressive downstream automation.
+//
+// One of three early-stage severity splits (context-low / medium / high).
+// All three share the identical GLOBAL EXCLUSIONS header below — keep in sync.
+DeviceProcessEvents
+// === GLOBAL EXCLUSIONS v1 — keep identical across all LOLBin rules ===
+// (company-specific values redacted as "x"; restore before deploying)
+| where DeviceName startswith "X"
+| where not(InitiatingProcessAccountName has_any ("adm_", "Administrator", "system", "lokaler dienst", "defaultuser0", "devopsserviceuser", "System", "hmsupport"))
+| where isnotempty(InitiatingProcessAccountName)
+//| where not(InitiatingProcessFolderPath has_any ("C:\\Program Files (x86)\\Microsoft Visual Studio",
+//    "C:\\Program Files\\Microsoft Visual Studio\\2022\\Professional\\"))
+| where not(InitiatingProcessParentFileName == "x" and (InitiatingProcessCommandLine contains "x" and InitiatingProcessCommandLine contains "x"))
+| where not(ProcessCommandLine matches regex @"x")
+// === END GLOBAL EXCLUSIONS v1 ===
+| where
+    (1 == 2)   // inert seed — every detection below starts with `or`, so any line toggles freely
+    or (ProcessCommandLine has "bcdedit.exe" and ProcessCommandLine has_any ("/set", "/deletevalue"))
+    or (ProcessCommandLine has "bitsadmin.exe" and ProcessCommandLine has_any ("transfer", "download"))
+    or (ProcessCommandLine has "certutil.exe" and ProcessCommandLine matches regex "(?i).*urlcache.*split.*f.*")
+    // FIX: was (has "cmd.exe" and has "-enc") — "-enc" is a PowerShell switch. Now targets
+    // powershell/pwsh plus the download-cradle verbs.
+    or (ProcessCommandLine has_any ("powershell.exe", "pwsh.exe")
+        and ProcessCommandLine has_any ("-enc", "-encodedcommand", "frombase64string", "downloadstring", "downloadfile", "net.webclient"))
+    or (ProcessCommandLine has "installutil.exe")
+    or (ProcessCommandLine has "mavinject.exe")
+    or (ProcessCommandLine has "mshta.exe" and ProcessCommandLine has_any ("http", "https"))
+    or (ProcessCommandLine has "msiexec.exe" and ProcessCommandLine matches regex "(?i).*(http|https).*")
+    or (ProcessCommandLine has "netsh.exe" and ProcessCommandLine has "interface portproxy add")
+    or (ProcessCommandLine has "powershell.exe" and ProcessCommandLine matches regex "(?i).*i(e|x)(.*?)\\(")
+    // FIX: require dump-relevant args (was bare procdump OR mavinject, unbounded + duplicated)
+    or (ProcessCommandLine has "procdump.exe" and ProcessCommandLine has_any ("-ma", "lsass"))
+    or (ProcessCommandLine has "regsvr32.exe" and ProcessCommandLine matches regex "(?i).*\\/i:(http|https).*")
+    or (ProcessCommandLine has "rundll32.exe" and ProcessCommandLine has_any ("javascript:", "vbscript:", "RunHTMLApplication"))
+    or (ProcessCommandLine has "wevtutil.exe" and ProcessCommandLine has "cl")   // log clear; "qe" (read) lives in the Context/Low rule
+    or (ProcessCommandLine has "wlrmdr.exe" and ProcessCommandLine has_all ("-s", "-f", "-t", "-m", "-a", "-u"))
+    // NEW: parent -> child malspam / macro chain (initial access -> execution). Document apps,
+    // archivers, and script hosts directly spawning a LOLBin. Outlook/browsers deliberately
+    // excluded (too noisy). RunAction.vbs is the contentACCESS add-in (legit).
+    or (InitiatingProcessFileName in~ ("winword.exe", "excel.exe", "powerpnt.exe", "onenote.exe",
+            "msaccess.exe", "mspub.exe", "visio.exe", "acrord32.exe", "7z.exe", "winrar.exe",
+            "wscript.exe", "cscript.exe")
+        and FileName in~ ("certutil.exe", "bitsadmin.exe", "mshta.exe", "rundll32.exe", "regsvr32.exe",
+            "wscript.exe", "cscript.exe", "powershell.exe", "pwsh.exe", "curl.exe", "msiexec.exe",
+            "installutil.exe", "wmic.exe", "msbuild.exe")
+        and not(ProcessCommandLine contains "contentACCESSForm\\RunAction.vbs"))
+| extend Severity = "High"
+| order by Timestamp desc

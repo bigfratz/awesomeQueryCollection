@@ -1,0 +1,28 @@
+// Rule: LOLBin_EarlyStage_ContextLow
+// Merged Info+Low tier — discovery/context and unusual tooling. Lowest-
+// confidence; wire to enrichment/ticketing, not aggressive automation.
+//
+// One of three early-stage severity splits (context-low / medium / high).
+// All three share the identical GLOBAL EXCLUSIONS header below — keep in sync.
+DeviceProcessEvents
+// === GLOBAL EXCLUSIONS v1 — keep identical across all LOLBin rules ===
+// (company-specific values redacted as "x"; restore before deploying)
+| where DeviceName startswith "X"
+| where not(InitiatingProcessAccountName has_any ("adm_", "Administrator", "system", "lokaler dienst", "defaultuser0", "devopsserviceuser", "System", "hmsupport"))
+| where isnotempty(InitiatingProcessAccountName)
+//| where not(InitiatingProcessFolderPath has_any ("C:\\Program Files (x86)\\Microsoft Visual Studio",
+//    "C:\\Program Files\\Microsoft Visual Studio\\2022\\Professional\\"))
+| where not(InitiatingProcessParentFileName == "x" and (InitiatingProcessCommandLine contains "x" and InitiatingProcessCommandLine contains "x"))
+| where not(ProcessCommandLine matches regex @"x")
+// === END GLOBAL EXCLUSIONS v1 ===
+| where
+    (1 == 2)   // inert seed — every detection below starts with `or`, so any line toggles freely
+    or (ProcessCommandLine has "arp.exe" and ProcessCommandLine has "/a")
+    or (ProcessCommandLine has "ipconfig.exe" and ProcessCommandLine has "/displaydns")
+    or (ProcessCommandLine has "netstat" and ProcessCommandLine has_any ("-an", "-o"))
+    or (ProcessCommandLine has "whoami.exe" and ProcessCommandLine has_any ("/priv", "/groups"))
+    or (ProcessCommandLine has "wevtutil.exe" and ProcessCommandLine has "qe")   // read-only query; "cl" (clear) lives in the High rule
+    or (ProcessCommandLine has "dnscmd.exe")
+    or (ProcessCommandLine has "nmap.exe")
+| extend Severity = "Low"
+| order by Timestamp desc
