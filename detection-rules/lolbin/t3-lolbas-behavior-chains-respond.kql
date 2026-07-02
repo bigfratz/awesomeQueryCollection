@@ -1,0 +1,180 @@
+// File: t3-lolbas-behavior-chains-respond.kql   [STAGING]
+//
+// BEHAVIOR-BASED T3 detections — the second detection dimension next to the
+// static argument-pattern tiers. The deployed T1-T3 rules key on what a single
+// command line LOOKS like; these key on what the activity DOES: multi-event
+// correlation (process -> network -> file), technique chaining within a time
+// window, and contextual escalation of primitives that are only Medium on
+// their own.
+//
+// OVERLAP CONVENTION: the "no cross-tier overlap" rule in the README applies
+// to single-command ownership. Behavior rules deliberately REUSE commands
+// owned by T1/T2 because they fire on the COMBINATION, not the command — a
+// discovery burst is made of T1-owned commands, and that is the point. What
+// must still be deduped before go-live is double-fire ATTRIBUTION (same event
+// opening a T2 review ticket and a T3 respond incident), noted per block.
+//
+// Deployment shape: written for Sentinel scheduled rules. Blocks 2 and 3
+// summarize/join, which drops the Timestamp/ReportId/DeviceId triple MDE
+// custom detections require — re-join arg_max(Timestamp, ReportId) per group
+// if you deploy them as MDE CDs. Deploy each block as its OWN analytics rule.
+//
+// All blocks carry the identical GLOBAL EXCLUSIONS header (same as T1-T3
+// static) — behavior rules stay admin-excluded like the rest of the T3 tier;
+// the no-account-exclusion variants belong in T4.
+
+
+// ============================================================
+// Rule: T3-LOLBAS-behavior-downloadchain-respond
+// Confirmed download cradle: a downloader LOLBin that (a) ran, (b) reached an
+// EXTERNAL address from the same PID within 2 minutes, and (c) dropped an
+// executable/script payload from the same PID within 3 minutes
+// (T1105 ingress tool transfer + T1204/T1059 follow-through).
+// This is hunting queries 2+3 (lolbin-hunting.kql) productionized: each leg
+// alone is T2-or-hunt material; all three legs together have essentially no
+// benign explanation, which is what buys the "respond" action.
+// Dedup note: a certutil-urlcache hit will ALSO fire the static T3 line —
+// same tier, same action, so it is attribution-only; decide which rule owns
+// the incident before go-live.
+// ============================================================
+let lookback = 1d;   // trim to just above rule frequency when deploying
+let payload_exts = dynamic(["exe", "dll", "ps1", "vbs", "js", "jse", "hta", "bat", "cmd", "scr", "msi", "wsf"]);
+DeviceProcessEvents
+| where Timestamp > ago(lookback)
+// === GLOBAL EXCLUSIONS v1 — keep identical across all LOLBAS rules ===
+| where DeviceName startswith "X"
+| where not(InitiatingProcessAccountName has_any ("adm_", "administrator", "system", "lokaler dienst", "defaultuser0", "<svc_account_1>", "<svc_account_2>"))
+| where isnotempty(InitiatingProcessAccountName)
+//| where not(InitiatingProcessFolderPath has_any ("C:\\Program Files (x86)\\Microsoft Visual Studio",
+//    "C:\\Program Files\\Microsoft Visual Studio\\2022\\Professional\\"))
+| where not(InitiatingProcessParentFileName == "x" and (InitiatingProcessCommandLine contains "x" and InitiatingProcessCommandLine contains "x"))
+| where not(ProcessCommandLine matches regex @"x")
+// === END GLOBAL EXCLUSIONS v1 ===
+| where FileName in~ ("certutil.exe", "bitsadmin.exe", "mshta.exe", "curl.exe", "wget.exe")
+    // powershell only with cradle verbs — bare powershell + network + file write is BAU
+    or (FileName in~ ("powershell.exe", "pwsh.exe")
+        and ProcessCommandLine has_any ("downloadstring", "downloadfile", "net.webclient", "invoke-webrequest", "start-bitstransfer", "-enc", "-encodedcommand"))
+| project ProcessTime = Timestamp, ReportId, DeviceId, DeviceName, InitiatingProcessAccountName,
+    LolbinFile = FileName, ProcessCommandLine, LolbinPid = ProcessId
+| join kind=inner (
+    DeviceNetworkEvents
+    | where Timestamp > ago(lookback)
+    | where ActionType in ("ConnectionSuccess", "ConnectionAttempted")
+    | where not(ipv4_is_private(RemoteIP))   // external only; internal fetches are far more often BAU
+    | project NetTime = Timestamp, DeviceId, NetPid = InitiatingProcessId, RemoteIP, RemoteUrl, RemotePort
+) on DeviceId
+| where NetPid == LolbinPid and NetTime between (ProcessTime .. ProcessTime + 2m)
+| join kind=inner (
+    DeviceFileEvents
+    | where Timestamp > ago(lookback)
+    | where ActionType == "FileCreated"
+    | extend DroppedExt = tolower(tostring(split(FileName, ".")[-1]))
+    | where DroppedExt in (payload_exts)
+    | project FileTime = Timestamp, DeviceId, FilePid = InitiatingProcessId,
+        DroppedFile = FileName, DroppedPath = FolderPath, DroppedSHA256 = SHA256
+) on DeviceId
+| where FilePid == LolbinPid and FileTime between (ProcessTime .. ProcessTime + 3m)
+| project ProcessTime, ReportId, DeviceId, DeviceName, InitiatingProcessAccountName,
+    LolbinFile, ProcessCommandLine, RemoteIP, RemoteUrl, RemotePort, DroppedPath, DroppedSHA256
+| extend Severity = "High"
+| order by ProcessTime desc
+
+
+// ============================================================
+// Rule: T3-LOLBAS-behavior-discoveryburst-respond
+// Discovery burst: 4+ DISTINCT discovery techniques from the same account on
+// the same device inside 10 minutes (T1016/T1033/T1049/T1057/T1082/T1087/
+// T1482). Every constituent command is T1-owned (Info/Low) — admins run one
+// or two of these; hands-on-keyboard recon after initial access runs the
+// checklist. Diversity (dcount of techniques), not volume, is the signal:
+// a script looping `netstat` 50 times stays 1 technique and does not fire.
+// This implements the standing escalation note on nltest ("escalate if
+// chained with other discovery").
+// Tuning: threshold 4 is the staging start; check a 2-week window and raise
+// to 5 if inventory/diagnostic scripts (which run fixed command sets) hit it.
+// Better: exclude those scripts by InitiatingProcessCommandLine instead.
+// Window note: bin(10m) is tumbling — a burst straddling a bin boundary can
+// split and miss. Acceptable for staging; move to a sliding window (scan or
+// self-join) if boundary misses show up in validation.
+// ============================================================
+let lookback = 1d;
+DeviceProcessEvents
+| where Timestamp > ago(lookback)
+// === GLOBAL EXCLUSIONS v1 — keep identical across all LOLBAS rules ===
+| where DeviceName startswith "X"
+| where not(InitiatingProcessAccountName has_any ("adm_", "administrator", "system", "lokaler dienst", "defaultuser0", "<svc_account_1>", "<svc_account_2>"))
+| where isnotempty(InitiatingProcessAccountName)
+//| where not(InitiatingProcessFolderPath has_any ("C:\\Program Files (x86)\\Microsoft Visual Studio",
+//    "C:\\Program Files\\Microsoft Visual Studio\\2022\\Professional\\"))
+| where not(InitiatingProcessParentFileName == "x" and (InitiatingProcessCommandLine contains "x" and InitiatingProcessCommandLine contains "x"))
+| where not(ProcessCommandLine matches regex @"x")
+// === END GLOBAL EXCLUSIONS v1 ===
+| extend DiscoveryTechnique = case(
+    ProcessCommandLine has "whoami.exe" and ProcessCommandLine has_any ("/priv", "/groups"), "T1033 token/privilege enum",
+    ProcessCommandLine has_any ("qwinsta.exe", "query.exe") and ProcessCommandLine has "user", "T1033 session enum",
+    ProcessCommandLine has "nltest.exe", "T1482 domain trust enum",
+    ProcessCommandLine has "systeminfo.exe", "T1082 host inventory",
+    ProcessCommandLine has "tasklist.exe" and ProcessCommandLine has_any ("/svc", "/v"), "T1057 process/service enum",
+    ProcessCommandLine has "net.exe" and ProcessCommandLine has_any ("view", "group", "user") and not(ProcessCommandLine has "/add"), "T1087 account/share enum",
+    ProcessCommandLine has "arp.exe" and ProcessCommandLine has "/a", "T1016 arp cache",
+    ProcessCommandLine has "ipconfig.exe" and ProcessCommandLine has "/displaydns", "T1016 dns cache",
+    ProcessCommandLine has "netstat" and ProcessCommandLine has_any ("-an", "-o"), "T1049 connection enum",
+    ProcessCommandLine has "vssadmin.exe" and ProcessCommandLine has "list", "T1490 shadow-copy recon",
+    "")
+| where isnotempty(DiscoveryTechnique)
+| summarize Techniques = make_set(DiscoveryTechnique), TechniqueCount = dcount(DiscoveryTechnique),
+    SampleCommands = make_set(ProcessCommandLine, 20),
+    FirstSeen = min(Timestamp), LastSeen = max(Timestamp)
+    by DeviceId, DeviceName, InitiatingProcessAccountName, Window = bin(Timestamp, 10m)
+| where TechniqueCount >= 4
+| extend Severity = "High"
+| order by FirstSeen desc
+
+
+// ============================================================
+// Rule: T3-LOLBAS-behavior-persistence-escalation-respond
+// Contextual escalation of the T2 persistence primitives — implements the
+// escalation notes already written into the T2/reference comments
+// ("escalate on /ru SYSTEM or odd paths"; "escalate to High only when the
+// binPath points at powershell/cmd or a temp/user path").
+// schtasks /create (T1053.005), reg add Run/RunOnce (T1547.001), and
+// sc create/config (T1543.003) are Medium bare because installers do them
+// constantly — but installers persist binaries under Program Files, not
+// interpreters under AppData. The payload CONTEXT is what escalates to T3.
+// Overlap note: T2 still fires its bare-primitive lines on these same events
+// (review + respond double-fire). Either accept it (T3 owns the incident,
+// T2 hit becomes enrichment) or add `not(<these conditions>)` guards to the
+// three T2 lines — decide before go-live.
+// ============================================================
+let user_writable = dynamic(["\\appdata\\", "\\users\\public\\", "\\downloads\\", "\\windows\\temp\\", "%appdata%", "%localappdata%", "%temp%", "%public%"]);
+let script_payloads = dynamic(["powershell", "pwsh", "mshta", "wscript", "cscript", "regsvr32", "rundll32", "cmd /c", "cmd.exe /c"]);
+DeviceProcessEvents
+// === GLOBAL EXCLUSIONS v1 — keep identical across all LOLBAS rules ===
+| where DeviceName startswith "X"
+| where not(InitiatingProcessAccountName has_any ("adm_", "administrator", "system", "lokaler dienst", "defaultuser0", "<svc_account_1>", "<svc_account_2>"))
+| where isnotempty(InitiatingProcessAccountName)
+//| where not(InitiatingProcessFolderPath has_any ("C:\\Program Files (x86)\\Microsoft Visual Studio",
+//    "C:\\Program Files\\Microsoft Visual Studio\\2022\\Professional\\"))
+| where not(InitiatingProcessParentFileName == "x" and (InitiatingProcessCommandLine contains "x" and InitiatingProcessCommandLine contains "x"))
+| where not(ProcessCommandLine matches regex @"x")
+// === END GLOBAL EXCLUSIONS v1 ===
+| where
+    (1 == 2)   // inert seed — every detection below starts with `or`, so any line toggles freely
+    // schtasks /create escalated: SYSTEM run-as, user-writable target, or interpreter payload.
+    // OneDrive's per-user updater task legitimately lives under AppData — excluded.
+    or (ProcessCommandLine has "schtasks.exe" and ProcessCommandLine has "/create"
+        and (ProcessCommandLine matches regex @"(?i)/ru\s+(system|""?nt authority\\system)"
+            or ProcessCommandLine has_any (user_writable)
+            or ProcessCommandLine has_any (script_payloads))
+        and not(ProcessCommandLine has_any ("OneDrive Standalone Update Task", "OneDrive Reporting Task")))
+    // Run/RunOnce escalated: autorun value pointing at a user-writable path or interpreter.
+    or (ProcessCommandLine has "reg.exe" and ProcessCommandLine has "add"
+        and ProcessCommandLine has_any ("\\Run", "\\RunOnce")
+        and (ProcessCommandLine has_any (user_writable) or ProcessCommandLine has_any (script_payloads)))
+    // Service persistence escalated: binPath at an interpreter or user-writable path — the
+    // exact escalation the reference file's sc.exe comment calls for.
+    or (ProcessCommandLine has "sc.exe" and ProcessCommandLine has_any ("create", "config")
+        and ProcessCommandLine has "binpath"
+        and (ProcessCommandLine has_any (user_writable) or ProcessCommandLine has_any (script_payloads)))
+| extend Severity = "High"
+| order by Timestamp desc
