@@ -56,8 +56,10 @@ DeviceProcessEvents
 
 // --- OVERLAP NOTES (resolve before graduating from staging) ---
 // 1. wevtutil cl also lives in T3 (admin-excluded there), so today they overlap only in
-//    user context. Decide the split before go-live so one event doesn't trigger both a
-//    "respond" (T3) and an "isolate" (T4) action.
+//    user context. NOTE: T3 ALSO auto-isolates, so a double-fire is not a conflicting action
+//    (both isolate; isolation is idempotent) — it's a DEDUP / escalation-attribution concern:
+//    avoid the same event opening two incidents in two escalation chains. Decide which tier
+//    owns wevtutil cl before go-live.
 // 2. procdump + psexec are also in the separate Sysinternals rule, which excludes admin.
 //    Intended division: Sysinternals rule = generic/user-context usage; this rule = the
 //    weaponized argument patterns in admin/SYSTEM context the Sysinternals rule drops.
