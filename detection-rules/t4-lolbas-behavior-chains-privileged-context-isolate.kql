@@ -1,0 +1,169 @@
+// File: t4-lolbas-behavior-chains-privileged-context-isolate.kql   [STAGING]
+//
+// BEHAVIOR-BASED T4 detections — critical-tier correlation rules that sit
+// next to the static-signature T4 file. Where the static T4 catches known
+// weaponized argument patterns, these catch the BEHAVIOR: technique chains,
+// tool-agnostic artifacts, and fan-out — the shapes that survive an attacker
+// renaming the binary or using a tool no signature line names.
+//
+// Same scope contract as the static T4: MINIMAL header, NO account exclusion
+// (interpretation #1 — fires on any account, does not exclude privileged
+// ones). Cred theft, anti-recovery, and lateral movement run elevated by
+// design; excluding admin/SYSTEM here would blind the rule to its own
+// target. Lives one level above lolbin/ like the static T4, because these
+// span beyond LOLBAS (any process, Sysinternals, remote-exec tooling).
+//
+// Response tier: isolate. Keep in STAGING until volume is understood.
+// Deployment shape: written for Sentinel scheduled rules; blocks 1 and 3
+// summarize (drops Timestamp/ReportId/DeviceId that MDE custom detections
+// require) — re-join arg_max(Timestamp, ReportId) per group for MDE CDs.
+// Deploy each block as its OWN analytics rule.
+
+
+// ============================================================
+// Rule: T4-LOLBAS-behavior-antirecoverychain-isolate
+// Ransomware pre-encryption chain: 2+ DISTINCT anti-recovery / anti-forensics
+// actions on the same device inside 30 minutes (T1490 / T1070 / T1485).
+// Each single action already lives as a static line (T3 or T4); legitimate
+// admin work occasionally produces ONE of them (a backup-tool reset, a log
+// rotation script) — but shadow-copy deletion AND boot-recovery tamper AND
+// log clearing together is the textbook pre-encryption checklist and has no
+// benign sequence. Diversity (dcount), not repetition, is the signal.
+// Adds two primitives no static line owns yet: `wmic shadowcopy delete`
+// (T1490 via WMI, same effect as vssadmin) and `cipher /w` (T1485 free-space
+// wipe, defeats file carving after deletion).
+// Dedup note: the constituent single events also fire static T3/T4 lines —
+// same isolate action, so attribution-only; the chain rule should OWN the
+// incident (it carries the most context) with static hits as enrichment.
+// ============================================================
+let lookback = 1d;   // trim to just above rule frequency when deploying
+DeviceProcessEvents
+| where Timestamp > ago(lookback)
+// === MINIMAL EXCLUSIONS v1 — NO account exclusion (intentional) ===
+| where DeviceName startswith "X"   // scope to your STAGING device prefix first
+// NOTE: deliberately no InitiatingProcessAccountName exclusion here — admin/SYSTEM
+// context is exactly where these techniques fire. Do not "helpfully" re-add it.
+| where isnotempty(InitiatingProcessAccountName)
+//| where not(InitiatingProcessFolderPath has_any ("C:\\Program Files (x86)\\Microsoft Visual Studio",
+//    "C:\\Program Files\\Microsoft Visual Studio\\2022\\Professional\\"))
+| where not(InitiatingProcessParentFileName == "x" and (InitiatingProcessCommandLine contains "x" and InitiatingProcessCommandLine contains "x"))
+| where not(ProcessCommandLine matches regex @"x")
+// === END MINIMAL EXCLUSIONS v1 ===
+| extend AntiRecoveryAction = case(
+    ProcessCommandLine has "vssadmin.exe" and ProcessCommandLine has "delete" and ProcessCommandLine has "shadows", "T1490 shadow-copy deletion (vssadmin)",
+    ProcessCommandLine has "wmic.exe" and ProcessCommandLine has "shadowcopy" and ProcessCommandLine has "delete", "T1490 shadow-copy deletion (wmic)",
+    ProcessCommandLine has "wbadmin.exe" and ProcessCommandLine has "delete" and ProcessCommandLine has_any ("catalog", "backup", "systemstatebackup"), "T1490 backup deletion",
+    ProcessCommandLine has "bcdedit.exe" and ProcessCommandLine has_any ("recoveryenabled", "bootstatuspolicy"), "T1490 boot-recovery tamper",
+    ProcessCommandLine has "wevtutil.exe" and ProcessCommandLine has "cl", "T1070.001 event-log clear",
+    ProcessCommandLine has "fsutil.exe" and ProcessCommandLine has_all ("usn", "deletejournal"), "T1070 USN-journal wipe",
+    ProcessCommandLine has "cipher.exe" and ProcessCommandLine has "/w", "T1485 free-space wipe",
+    "")
+| where isnotempty(AntiRecoveryAction)
+| summarize Actions = make_set(AntiRecoveryAction), ActionCount = dcount(AntiRecoveryAction),
+    SampleCommands = make_set(ProcessCommandLine, 20), Accounts = make_set(InitiatingProcessAccountName),
+    FirstSeen = min(Timestamp), LastSeen = max(Timestamp)
+    by DeviceId, DeviceName, Window = bin(Timestamp, 30m)
+| where ActionCount >= 2
+| extend Severity = "Critical"
+| order by FirstSeen desc
+
+
+// ============================================================
+// Rule: T4-LOLBAS-behavior-lsassdump-isolate
+// Tool-agnostic LSASS dump (T1003.001): ANY process that both opened a handle
+// to lsass.exe and wrote a .dmp file within 5 minutes from the same PID.
+// The static T4 lines name procdump and comsvcs; this catches what they
+// can't — renamed procdump, nanodump, mimikatz sekurlsa, Task-Manager-style
+// dumps by an attacker, any future tool — because it keys on the invariant
+// behavior (lsass handle + dump artifact), not the binary name.
+// FP control is the CONJUNCTION: EDR/AV opens lsass constantly but does not
+// write .dmp files; WER writes .dmp files legitimately, so the WER family is
+// excluded. Seed the placeholder with any diagnostic agent that legitimately
+// dumps processes in this environment.
+// Dedup note: a real procdump -ma lsass fires this AND the static T4 line —
+// both isolate, attribution-only; decide the owner before go-live.
+// ============================================================
+let lookback = 1d;
+DeviceEvents
+| where Timestamp > ago(lookback)
+// === MINIMAL EXCLUSIONS v1 — NO account exclusion (intentional) ===
+| where DeviceName startswith "X"   // scope to your STAGING device prefix first
+| where isnotempty(InitiatingProcessAccountName)
+| where not(InitiatingProcessParentFileName == "x" and (InitiatingProcessCommandLine contains "x" and InitiatingProcessCommandLine contains "x"))
+// === END MINIMAL EXCLUSIONS v1 ===
+| where ActionType == "OpenProcessApiCall"
+| where FileName =~ "lsass.exe"   // target of the opened handle
+| where not(InitiatingProcessFileName in~ ("werfault.exe", "werfaultsecure.exe", "wermgr.exe", "<diag_agent_1>"))
+| project OpenTime = Timestamp, ReportId, DeviceId, DeviceName,
+    DumperPid = InitiatingProcessId, DumperFile = InitiatingProcessFileName,
+    DumperCmd = InitiatingProcessCommandLine, DumperPath = InitiatingProcessFolderPath,
+    DumperAccount = InitiatingProcessAccountName
+| join kind=inner (
+    DeviceFileEvents
+    | where Timestamp > ago(lookback)
+    | where ActionType in ("FileCreated", "FileModified")
+    | where FileName endswith ".dmp"
+    | project FileTime = Timestamp, DeviceId, FilePid = InitiatingProcessId,
+        DumpFile = FileName, DumpPath = FolderPath, DumpSHA256 = SHA256
+) on DeviceId
+| where FilePid == DumperPid and FileTime between (OpenTime .. OpenTime + 5m)
+| project OpenTime, ReportId, DeviceId, DeviceName, DumperAccount, DumperFile, DumperPath, DumperCmd,
+    DumpFile, DumpPath, DumpSHA256
+| extend Severity = "Critical"
+| order by OpenTime desc
+
+
+// ============================================================
+// Rule: T4-LOLBAS-behavior-lateralfanout-isolate
+// Lateral-movement fan-out: one device pushing remote execution to 3+
+// DISTINCT targets inside 15 minutes (T1021.002/.006 / T1047 / T1053.005 /
+// T1569.002). The static T4 catches each remote-exec primitive per event;
+// what it cannot see is BREADTH — an admin fixes one box, ransomware
+// deployment and worm-style spread hit many. Counting distinct extracted
+// targets per source device is the classic fan-out detection.
+// Covers psexec/paexec (\\target), wmic /node:, winrs -r:, schtasks /s, and
+// sc \\target — extraction keys on those five addressing forms.
+// Tuning: threshold 3 in a 15m tumbling bin is the staging start. Deployment
+// tooling (SCCM push, patch scripts) is the expected FP class — exclude by
+// InitiatingProcessCommandLine/account once identified, or raise to 5.
+// Dedup note: constituent psexec/wmic-node events also fire static T4 lines —
+// attribution-only, chain rule should own (it names the target set).
+// ============================================================
+let lookback = 1d;
+DeviceProcessEvents
+| where Timestamp > ago(lookback)
+// === MINIMAL EXCLUSIONS v1 — NO account exclusion (intentional) ===
+| where DeviceName startswith "X"   // scope to your STAGING device prefix first
+| where isnotempty(InitiatingProcessAccountName)
+| where not(InitiatingProcessParentFileName == "x" and (InitiatingProcessCommandLine contains "x" and InitiatingProcessCommandLine contains "x"))
+| where not(ProcessCommandLine matches regex @"x")
+// === END MINIMAL EXCLUSIONS v1 ===
+| where
+    (1 == 2)   // inert seed — every detection below starts with `or`, so any line toggles freely
+    or (ProcessCommandLine has_any ("psexec.exe", "psexec64.exe", "paexec.exe") and ProcessCommandLine has "\\\\")
+    or (ProcessCommandLine has "wmic.exe" and ProcessCommandLine has "/node:")
+    or (ProcessCommandLine has "winrs.exe" and ProcessCommandLine has "-r:")
+    or (ProcessCommandLine has "schtasks.exe" and ProcessCommandLine has "/s")
+    or (ProcessCommandLine has "sc.exe" and ProcessCommandLine has "\\\\" and ProcessCommandLine has_any ("create", "start", "config"))
+| extend RemoteTarget = tolower(extract(@'(?i)(?:\\\\|/node:|-r:|/s\s+)"?([\w\-\.]+)', 1, ProcessCommandLine))
+| where isnotempty(RemoteTarget) and RemoteTarget !in ("localhost", "127.0.0.1", ".")
+| summarize Targets = make_set(RemoteTarget), TargetCount = dcount(RemoteTarget),
+    SampleCommands = make_set(ProcessCommandLine, 20), Accounts = make_set(InitiatingProcessAccountName),
+    FirstSeen = min(Timestamp), LastSeen = max(Timestamp)
+    by DeviceId, DeviceName, Window = bin(Timestamp, 15m)
+| where TargetCount >= 3
+| extend Severity = "Critical"
+| order by FirstSeen desc
+
+// --- STAGING NOTES (resolve before graduating) ---
+// 1. Ownership: every chain here re-uses primitives owned by static T3/T4
+//    lines. Both fire on real incidents (same isolate action — idempotent),
+//    so this is DEDUP/attribution, not an action conflict: route the chain
+//    rules as the incident owner, static single-event hits as enrichment.
+// 2. bin() windows are tumbling — a chain straddling a boundary can split
+//    below threshold. Validate against known-bad simulation (e.g. run the
+//    Atomic Red Team T1490 chain) and move to sliding windows if misses occur.
+// 3. The lsass rule depends on OpenProcessApiCall telemetry being enabled for
+//    the tenant; confirm the ActionType is populated before trusting silence.
+// 4. Fan-out extraction regex takes the FIRST target-shaped token per event;
+//    multi-target one-liners (rare) undercount — acceptable, they still count 1.

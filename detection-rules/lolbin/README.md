@@ -13,6 +13,8 @@ constantly and legitimately.
 | `t2-lolbas-suspicious-review.kql` | **Deploy.** Dual-use techniques + light persistence; needs a second signal to escalate. | Review (analyst) |
 | `t3-lolbas-malicious-respond.kql` | **Deploy.** Execution / evasion / initial-access chains; rare or no benign explanation. | Respond (aggressive) |
 | `../t4-lolbas-sysinternals-privileged-context-isolate.kql` | **Staging.** Cross-family critical tier (cred-access / impact / lateral movement) spanning LOLBAS, Sysinternals, and DC tooling. Lives one level up. MINIMAL header (no admin exclusion). | Isolate (harshest) |
+| `t3-lolbas-behavior-chains-respond.kql` | **Staging.** Behavior-based T3: confirmed download chain (process→network→file), discovery burst, contextual persistence escalation. GLOBAL header. | Respond (aggressive) |
+| `../t4-lolbas-behavior-chains-privileged-context-isolate.kql` | **Staging.** Behavior-based T4: anti-recovery chain, tool-agnostic LSASS dump, lateral-movement fan-out. MINIMAL header. Lives one level up. | Isolate (harshest) |
 | `lolbin-hunting.kql` | Analyst-driven hunts (rarity/anomaly + network/file correlation, cmd→script, interpreter payloads). | None — human triage |
 | `lolbin-severity-tiers.kql` | **Reference.** Fuller 4-tier, all-stages catalogue with per-line MITRE rationale. Includes later-stage detections (LSASS dump, hive save, `vssadmin delete shadows`, psexec). | None — reference/backlog |
 
@@ -50,6 +52,31 @@ light persistence). Conventions shared across all three:
 2. Confirm `wevtutil qe` matches your telemetry's term form.
 3. Sanity-check the `FileName in~` matches for curl/wget and the interpreters
    against a sample window.
+
+## Behavior-based rules (staging)
+
+The static tiers key on what a single command line **looks like**; the two
+behavior files key on what the activity **does** — multi-event correlation
+(process→network→file), technique chaining in a time window, contextual
+escalation, and fan-out. They are the productionized descendants of the
+hunting queries.
+
+Conventions specific to behavior rules:
+
+- **Overlap is by design, ownership is not.** The "no cross-tier overlap"
+  rule applies to single-command ownership; behavior rules deliberately reuse
+  commands owned by other tiers because they fire on the *combination* (a
+  discovery burst is made of T1-owned commands — that's the point). What must
+  be decided before go-live is incident **attribution**: route the behavior
+  rule as incident owner (it carries the most context), static hits as
+  enrichment.
+- **Multiple blocks per file, one analytics rule per block** when deploying.
+- **Tumbling `bin()` windows** in the aggregation blocks — a chain straddling
+  a boundary can split below threshold; validate with simulation and move to
+  sliding windows if misses show up.
+- Written for Sentinel scheduled rules; the summarize/join blocks drop the
+  `Timestamp`/`ReportId`/`DeviceId` triple MDE custom detections require —
+  re-join `arg_max(Timestamp, ReportId)` per group for MDE CDs.
 
 ## Later ATT&CK stages → T4 (staging)
 
