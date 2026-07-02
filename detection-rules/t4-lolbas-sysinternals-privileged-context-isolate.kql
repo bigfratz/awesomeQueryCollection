@@ -1,10 +1,10 @@
-// Rule: T4 - malicious activity by privileged account - isolate   [STAGING]
+// Rule: T4-LOLBAS-Sysinternals-privileged-context-isolate   [STAGING]
 //
 // Highest-tier, high-confidence malicious activity that runs in privileged /
 // admin / SYSTEM context — credential theft, destructive impact, lateral
-// movement. NOT limited to LOLBins: this is the cross-family "critical ->
-// auto-isolate" bucket (the T1-T3 LOLBin rules feed the lower tiers; native
-// binaries, Sysinternals-adjacent tools, and DC tooling all belong here).
+// movement. Spans LOLBAS binaries, Sysinternals(-adjacent) tools, and DC
+// tooling — the cross-family "critical -> auto-isolate" bucket above the
+// T1-T3 LOLBAS tiers.
 //
 // SCOPE = "does not EXCLUDE privileged accounts" (interpretation #1), NOT
 // "only privileged accounts". These techniques must be caught in ANY context —
@@ -17,7 +17,6 @@
 // dedupe against T3 / the Sysinternals rule (see overlap notes at bottom).
 DeviceProcessEvents
 // === MINIMAL EXCLUSIONS v1 — NO account exclusion (intentional) ===
-// (company-specific values anonymized; restore your own before deploying)
 | where DeviceName startswith "X"   // scope to your STAGING device prefix first
 // NOTE: deliberately no InitiatingProcessAccountName exclusion here — admin/SYSTEM
 // context is exactly where these techniques fire. Do not "helpfully" re-add it.

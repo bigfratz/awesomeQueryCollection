@@ -1,14 +1,13 @@
-// Rule: LOLBin-T1-signals-watch
+// Rule: T1-LOLBAS-signals-watch
 // Discovery/context and unusual tooling — lowest-confidence signals.
 // Wire to enrichment/ticketing ("watch"), not aggressive automation.
 //
 // One of three severity tiers (T1 signals / T2 suspicious / T3 malicious).
 // All three share the identical GLOBAL EXCLUSIONS header below — keep in sync.
 DeviceProcessEvents
-// === GLOBAL EXCLUSIONS v1 — keep identical across all LOLBin rules ===
-// (company-specific values anonymized; restore your own before deploying)
+// === GLOBAL EXCLUSIONS v1 — keep identical across all LOLBAS rules ===
 | where DeviceName startswith "X"
-| where not(InitiatingProcessAccountName has_any ("adm_", "administrator", "system", "lokaler dienst", "defaultuser0", "<svc_account_1>", "<svc_account_2>"))   // admin/service/support accounts — replace placeholders with your own
+| where not(InitiatingProcessAccountName has_any ("adm_", "administrator", "system", "lokaler dienst", "defaultuser0", "<svc_account_1>", "<svc_account_2>"))
 | where isnotempty(InitiatingProcessAccountName)
 //| where not(InitiatingProcessFolderPath has_any ("C:\\Program Files (x86)\\Microsoft Visual Studio",
 //    "C:\\Program Files\\Microsoft Visual Studio\\2022\\Professional\\"))

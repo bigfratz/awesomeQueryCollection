@@ -1,4 +1,4 @@
-// Rule: LOLBin-T3-malicious-respond
+// Rule: T3-LOLBAS-malicious-respond
 // Execution / defense-evasion / initial-access chains — rare or no benign
 // explanation, or the action itself is the malicious step. Safe to wire to
 // the most aggressive downstream automation ("respond").
@@ -6,10 +6,9 @@
 // One of three severity tiers (T1 signals / T2 suspicious / T3 malicious).
 // All three share the identical GLOBAL EXCLUSIONS header below — keep in sync.
 DeviceProcessEvents
-// === GLOBAL EXCLUSIONS v1 — keep identical across all LOLBin rules ===
-// (company-specific values anonymized; restore your own before deploying)
+// === GLOBAL EXCLUSIONS v1 — keep identical across all LOLBAS rules ===
 | where DeviceName startswith "X"
-| where not(InitiatingProcessAccountName has_any ("adm_", "administrator", "system", "lokaler dienst", "defaultuser0", "<svc_account_1>", "<svc_account_2>"))   // admin/service/support accounts — replace placeholders with your own
+| where not(InitiatingProcessAccountName has_any ("adm_", "administrator", "system", "lokaler dienst", "defaultuser0", "<svc_account_1>", "<svc_account_2>"))
 | where isnotempty(InitiatingProcessAccountName)
 //| where not(InitiatingProcessFolderPath has_any ("C:\\Program Files (x86)\\Microsoft Visual Studio",
 //    "C:\\Program Files\\Microsoft Visual Studio\\2022\\Professional\\"))
@@ -32,7 +31,7 @@ DeviceProcessEvents
     or (ProcessCommandLine has "netsh.exe" and ProcessCommandLine has "interface portproxy add")
     or (ProcessCommandLine has "powershell.exe" and ProcessCommandLine matches regex "(?i).*i(e|x)(.*?)\\(")
     // NOTE: procdump -ma/lsass moved out — it's Sysinternals (own rule) + credential access,
-    // so it belongs in T4 (all-context) not here. See lolbin-t4-critical-privileged-isolate.kql.
+    // so it belongs in T4 (all-context) not here. See ../t4-lolbas-sysinternals-privileged-context-isolate.kql.
     or (ProcessCommandLine has "regsvr32.exe" and ProcessCommandLine matches regex "(?i).*\\/i:(http|https).*")
     or (ProcessCommandLine has "rundll32.exe" and ProcessCommandLine has_any ("javascript:", "vbscript:", "RunHTMLApplication"))
     or (ProcessCommandLine has "wevtutil.exe" and ProcessCommandLine has "cl")   // log clear; "qe" (read) lives in the T1 rule
