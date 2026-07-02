@@ -24,7 +24,11 @@ DeviceProcessEvents
 | where
     (1 == 2)   // inert seed — every detection below starts with `or`, so any line toggles freely
     // --- Credential access ---
-    or (ProcessCommandLine has "procdump.exe" and ProcessCommandLine has_any ("-ma", "lsass"))            // T1003.001 LSASS dump
+    // NOTE: procdump + psexec below are SYSINTERNALS tools, also covered by the separate
+    // Sysinternals rule. That rule excludes admin/SYSTEM (generic-usage noise); T4 keeps them
+    // WITHOUT the exclusion on purpose — these weaponized argument patterns run elevated by
+    // design, so T4 is the safety net for exactly the context the Sysinternals rule drops.
+    or (ProcessCommandLine has "procdump.exe" and ProcessCommandLine has_any ("-ma", "lsass"))            // T1003.001 LSASS dump [Sysinternals]
     or (ProcessCommandLine has "rundll32.exe" and ProcessCommandLine has "comsvcs.dll" and ProcessCommandLine has "MiniDump")  // T1003.001 LSASS via comsvcs
     or (ProcessCommandLine has "reg.exe" and ProcessCommandLine has "save" and ProcessCommandLine has_any ("sam", "security", "system"))  // T1003.002 hive dump
     or (ProcessCommandLine has "esentutl.exe" and ProcessCommandLine has_any ("/y", "/vss") and ProcessCommandLine has_any ("ntds", ".dit", "sam"))  // T1003.003 NTDS/SAM copy
@@ -36,15 +40,19 @@ DeviceProcessEvents
     or (ProcessCommandLine has "wevtutil.exe" and ProcessCommandLine has "cl")                             // T1070.001 clear event log
     or (ProcessCommandLine has "fsutil.exe" and ProcessCommandLine has "usn" and ProcessCommandLine has "deletejournal")  // T1070 USN journal wipe
     // --- Lateral movement ---
-    or (ProcessCommandLine has_any ("psexec.exe", "psexec64.exe", "paexec.exe"))                           // T1569.002 / T1021.002 service exec
+    or (ProcessCommandLine has_any ("psexec.exe", "psexec64.exe", "paexec.exe"))                           // T1569.002 / T1021.002 service exec [Sysinternals/clone]
     or (ProcessCommandLine has "winrs.exe" and ProcessCommandLine has "-r:")                               // T1021.006 remote shell
     or (ProcessCommandLine has "wmic.exe" and ProcessCommandLine has "/node:" and ProcessCommandLine has_all ("process", "call", "create"))  // T1047 remote WMI exec
 | extend Severity = "Critical"
 | order by Timestamp desc
 
-// --- DEDUPE NOTE (do before graduating from staging) ---
-// procdump -ma/lsass and wevtutil cl also live in T3 (LOLBin-T3-malicious-respond).
-// Right now they only overlap in USER context: T3 excludes admin/SYSTEM, so this rule
-// is the only one catching the elevated case. Once T4 is live, decide the split —
-// e.g. move those two out of T3 entirely and let T4 own all-context, so a single
-// event doesn't fire both a "respond" and an "isolate" action.
+// --- OVERLAP NOTES (resolve before graduating from staging) ---
+// 1. wevtutil cl also lives in T3 (admin-excluded there), so today they overlap only in
+//    user context. Decide the split before go-live so one event doesn't trigger both a
+//    "respond" (T3) and an "isolate" (T4) action.
+// 2. procdump + psexec are also in the separate Sysinternals rule, which excludes admin.
+//    Intended division: Sysinternals rule = generic/user-context usage; T4 = the weaponized
+//    argument patterns in admin/SYSTEM context the Sysinternals rule drops. Confirm the
+//    Sysinternals rule's admin exclusion isn't ALSO hiding these patterns in user context —
+//    if it is, you want them caught there too (by the Sysinternals rule), with T4 as the
+//    elevated-context safety net.

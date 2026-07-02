@@ -31,8 +31,8 @@ DeviceProcessEvents
     or (ProcessCommandLine has "msiexec.exe" and ProcessCommandLine matches regex "(?i).*(http|https).*")
     or (ProcessCommandLine has "netsh.exe" and ProcessCommandLine has "interface portproxy add")
     or (ProcessCommandLine has "powershell.exe" and ProcessCommandLine matches regex "(?i).*i(e|x)(.*?)\\(")
-    // FIX: require dump-relevant args (was bare procdump OR mavinject, unbounded + duplicated)
-    or (ProcessCommandLine has "procdump.exe" and ProcessCommandLine has_any ("-ma", "lsass"))
+    // NOTE: procdump -ma/lsass moved out — it's Sysinternals (own rule) + credential access,
+    // so it belongs in T4 (all-context) not here. See lolbin-t4-critical-privileged-isolate.kql.
     or (ProcessCommandLine has "regsvr32.exe" and ProcessCommandLine matches regex "(?i).*\\/i:(http|https).*")
     or (ProcessCommandLine has "rundll32.exe" and ProcessCommandLine has_any ("javascript:", "vbscript:", "RunHTMLApplication"))
     or (ProcessCommandLine has "wevtutil.exe" and ProcessCommandLine has "cl")   // log clear; "qe" (read) lives in the T1 rule
