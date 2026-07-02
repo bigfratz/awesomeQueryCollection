@@ -1,0 +1,50 @@
+// Rule: LOLBin-T4-critical-privileged-isolate   [STAGING]
+// Crown-jewel, malicious-regardless techniques — credential theft,
+// destructive impact, and lateral movement. These run elevated BY DESIGN,
+// so this rule intentionally does NOT exclude admin/SYSTEM accounts (that
+// exclusion, used by T1-T3, would blind exactly these detections).
+//
+// Highest response tier ("isolate"). Keep in STAGING until the volume is
+// understood — then graduate and dedupe against T3 (see note at bottom).
+//
+// PRIVILEGED SCOPE: uses the MINIMAL exclusion header below (no account
+// filter), distinct from the GLOBAL header shared by T1-T3.
+DeviceProcessEvents
+// === MINIMAL EXCLUSIONS v1 — privileged scope, NO account exclusion (intentional) ===
+// (company-specific values anonymized; restore your own before deploying)
+| where DeviceName startswith "X"   // scope to your STAGING device prefix first
+// NOTE: deliberately no InitiatingProcessAccountName exclusion here — admin/SYSTEM
+// context is exactly where these techniques fire. Do not "helpfully" re-add it.
+| where isnotempty(InitiatingProcessAccountName)
+//| where not(InitiatingProcessFolderPath has_any ("C:\\Program Files (x86)\\Microsoft Visual Studio",
+//    "C:\\Program Files\\Microsoft Visual Studio\\2022\\Professional\\"))
+| where not(InitiatingProcessParentFileName == "x" and (InitiatingProcessCommandLine contains "x" and InitiatingProcessCommandLine contains "x"))
+| where not(ProcessCommandLine matches regex @"x")
+// === END MINIMAL EXCLUSIONS v1 ===
+| where
+    (1 == 2)   // inert seed — every detection below starts with `or`, so any line toggles freely
+    // --- Credential access ---
+    or (ProcessCommandLine has "procdump.exe" and ProcessCommandLine has_any ("-ma", "lsass"))            // T1003.001 LSASS dump
+    or (ProcessCommandLine has "rundll32.exe" and ProcessCommandLine has "comsvcs.dll" and ProcessCommandLine has "MiniDump")  // T1003.001 LSASS via comsvcs
+    or (ProcessCommandLine has "reg.exe" and ProcessCommandLine has "save" and ProcessCommandLine has_any ("sam", "security", "system"))  // T1003.002 hive dump
+    or (ProcessCommandLine has "esentutl.exe" and ProcessCommandLine has_any ("/y", "/vss") and ProcessCommandLine has_any ("ntds", ".dit", "sam"))  // T1003.003 NTDS/SAM copy
+    or (ProcessCommandLine has "ntdsutil.exe" and ProcessCommandLine has_any ("ifm", "create full"))       // T1003.003 NTDS.dit extraction (DC)
+    // --- Impact / anti-recovery ---
+    or (ProcessCommandLine has "vssadmin.exe" and ProcessCommandLine has "delete" and ProcessCommandLine has "shadows")  // T1490 shadow-copy deletion
+    or (ProcessCommandLine has "wbadmin.exe" and ProcessCommandLine has "delete" and ProcessCommandLine has_any ("catalog", "backup", "systemstatebackup"))  // T1490 backup deletion
+    // --- Defense evasion / anti-forensics (often SYSTEM) ---
+    or (ProcessCommandLine has "wevtutil.exe" and ProcessCommandLine has "cl")                             // T1070.001 clear event log
+    or (ProcessCommandLine has "fsutil.exe" and ProcessCommandLine has "usn" and ProcessCommandLine has "deletejournal")  // T1070 USN journal wipe
+    // --- Lateral movement ---
+    or (ProcessCommandLine has_any ("psexec.exe", "psexec64.exe", "paexec.exe"))                           // T1569.002 / T1021.002 service exec
+    or (ProcessCommandLine has "winrs.exe" and ProcessCommandLine has "-r:")                               // T1021.006 remote shell
+    or (ProcessCommandLine has "wmic.exe" and ProcessCommandLine has "/node:" and ProcessCommandLine has_all ("process", "call", "create"))  // T1047 remote WMI exec
+| extend Severity = "Critical"
+| order by Timestamp desc
+
+// --- DEDUPE NOTE (do before graduating from staging) ---
+// procdump -ma/lsass and wevtutil cl also live in T3 (LOLBin-T3-malicious-respond).
+// Right now they only overlap in USER context: T3 excludes admin/SYSTEM, so this rule
+// is the only one catching the elevated case. Once T4 is live, decide the split —
+// e.g. move those two out of T3 entirely and let T4 own all-context, so a single
+// event doesn't fire both a "respond" and an "isolate" action.

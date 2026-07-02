@@ -12,6 +12,7 @@ constantly and legitimately.
 | `lolbin-t1-signals-watch.kql` | **Deploy.** Discovery/context + unusual tooling — lowest-confidence signals. | Watch (enrichment/ticketing) |
 | `lolbin-t2-suspicious-review.kql` | **Deploy.** Dual-use techniques + light persistence; needs a second signal to escalate. | Review (analyst) |
 | `lolbin-t3-malicious-respond.kql` | **Deploy.** Execution / evasion / initial-access chains; rare or no benign explanation. | Respond (aggressive) |
+| `lolbin-t4-critical-privileged-isolate.kql` | **Staging.** Crown-jewel cred-access / destructive-impact / lateral-movement — malicious regardless of account. Privileged scope (MINIMAL header, no admin exclusion). | Isolate (harshest) |
 | `lolbin-hunting.kql` | Analyst-driven hunts (rarity/anomaly + network/file correlation, cmd→script, interpreter payloads). | None — human triage |
 | `lolbin-severity-tiers.kql` | **Reference.** Fuller 4-tier, all-stages catalogue with per-line MITRE rationale. Includes later-stage detections (LSASS dump, hive save, `vssadmin delete shadows`, psexec) not yet in the deployed set. | None — reference/backlog |
 
@@ -19,8 +20,10 @@ constantly and legitimately.
 
 `LOLBin-T{n}-{class}-{action}` — the `T{n}` prefix is the automation routing
 key (T1→watch, T2→review, T3→respond); `{class}` and `{action}` are for humans.
-A future privileged-scope rule (no admin exclusion) will flag that scope in its
-own title, e.g. `LOLBin-T3-malicious-respond-privileged`.
+The privileged-scope rule flags that scope in its own title:
+`LOLBin-T4-critical-privileged-isolate` (currently in staging). It uses the
+separate **MINIMAL** exclusion header — same as GLOBAL minus the account
+exclusion — because its detections run elevated by design.
 
 ## The three deployed rules
 
@@ -43,11 +46,13 @@ light persistence). Conventions shared across all three:
 3. Sanity-check the `FileName in~` matches for curl/wget and the interpreters
    against a sample window.
 
-## Backlog (later ATT&CK stages)
+## Later ATT&CK stages → T4 (staging)
 
-Deferred from the deployed set, catalogued in `lolbin-severity-tiers.kql`:
-credential access (`rundll32 comsvcs MiniDump`, `procdump -ma lsass`,
-`reg save sam/security/system`), impact (`vssadmin delete shadows`), and lateral
-movement (`psexec`/`paexec`). These belong in a **privileged-scope** rule that
-drops the admin/SYSTEM account exclusion — they run elevated, so the current
-exclusion would blind them.
+The later-stage detections (credential access, destructive impact, lateral
+movement) now live in `lolbin-t4-critical-privileged-isolate.kql`, which drops
+the admin/SYSTEM exclusion so it can see the elevated context these run in.
+`lolbin-severity-tiers.kql` remains the fuller catalogue/reference.
+
+Before graduating T4 from staging: dedupe against T3 — `procdump -ma lsass` and
+`wevtutil cl` appear in both (they only overlap in user context today, since T3
+excludes admin/SYSTEM). See the note at the bottom of the T4 file.
