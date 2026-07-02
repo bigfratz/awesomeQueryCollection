@@ -12,7 +12,7 @@ constantly and legitimately.
 | `lolbin-t1-signals-watch.kql` | **Deploy.** Discovery/context + unusual tooling — lowest-confidence signals. | Watch (enrichment/ticketing) |
 | `lolbin-t2-suspicious-review.kql` | **Deploy.** Dual-use techniques + light persistence; needs a second signal to escalate. | Review (analyst) |
 | `lolbin-t3-malicious-respond.kql` | **Deploy.** Execution / evasion / initial-access chains; rare or no benign explanation. | Respond (aggressive) |
-| `lolbin-t4-critical-privileged-isolate.kql` | **Staging.** Crown-jewel cred-access / destructive-impact / lateral-movement — malicious regardless of account. Privileged scope (MINIMAL header, no admin exclusion). | Isolate (harshest) |
+| `../t4-malicious-privileged-account-isolate.kql` | **Staging.** Cross-family critical tier (cred-access / impact / lateral movement) — no longer LOLBin-only, so it lives one level up. MINIMAL header (no admin exclusion). | Isolate (harshest) |
 | `lolbin-hunting.kql` | Analyst-driven hunts (rarity/anomaly + network/file correlation, cmd→script, interpreter payloads). | None — human triage |
 | `lolbin-severity-tiers.kql` | **Reference.** Fuller 4-tier, all-stages catalogue with per-line MITRE rationale. Includes later-stage detections (LSASS dump, hive save, `vssadmin delete shadows`, psexec) not yet in the deployed set. | None — reference/backlog |
 
@@ -20,10 +20,13 @@ constantly and legitimately.
 
 `LOLBin-T{n}-{class}-{action}` — the `T{n}` prefix is the automation routing
 key (T1→watch, T2→review, T3→respond); `{class}` and `{action}` are for humans.
-The privileged-scope rule flags that scope in its own title:
-`LOLBin-T4-critical-privileged-isolate` (currently in staging). It uses the
-separate **MINIMAL** exclusion header — same as GLOBAL minus the account
-exclusion — because its detections run elevated by design.
+The T4 critical tier outgrew the LOLBin family — it now covers high-confidence
+malicious privileged activity across sources (native, Sysinternals-adjacent, DC
+tooling), so it lives one level up as `../t4-malicious-privileged-account-isolate.kql`
+(currently in staging). It uses the separate **MINIMAL** exclusion header — same
+as GLOBAL minus the account exclusion — because its detections run elevated by
+design. "By privileged account" = does not *exclude* privileged accounts (still
+fires on any account); it is not scoped admin-only.
 
 ## The three deployed rules
 
