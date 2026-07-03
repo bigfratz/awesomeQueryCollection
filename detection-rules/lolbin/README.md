@@ -14,7 +14,7 @@ constantly and legitimately.
 | `t3-lolbas-malicious-respond.kql` | **Deploy.** Execution / evasion / initial-access chains; rare or no benign explanation. | Respond (aggressive) |
 | `../t4-lolbas-sysinternals-privileged-context-isolate.kql` | **Staging.** Cross-family critical tier (cred-access / impact / lateral movement) spanning LOLBAS, Sysinternals, and DC tooling. Lives one level up. MINIMAL header (no admin exclusion). | Isolate (harshest) |
 | `t3-lolbas-behavior-chains-respond.kql` | **Staging.** Behavior-based T3: confirmed download chain (process→network→file), discovery burst, contextual persistence escalation. GLOBAL header. | Respond (aggressive) |
-| `../t4-lolbas-defense-impairment-privileged-context-isolate.kql` | **Staging.** Cross-family defence-impairment tier (T1562): Defender disable via cmdline, kill/stop named security tooling, IFEO Debugger, IIS-log/WAF disable, WDigest downgrade. MINIMAL header. Lives one level up. | Isolate (harshest) |
+| `../t4-defense-impairment-privileged-context-isolate.kql` | **Staging.** Cross-family defence-impairment tier (T1562) — **not LOLBAS** (see naming note): Defender disable via cmdline, kill/stop named security tooling, IFEO Debugger, IIS-log/WAF disable, WDigest downgrade. MINIMAL header. Lives one level up. | Isolate (harshest) |
 | `../t4-lolbas-behavior-chains-privileged-context-isolate.kql` | **Staging.** Behavior-based T4: anti-recovery chain, tool-agnostic LSASS dump, lateral-movement fan-out, defence-impairment burst. MINIMAL header. Lives one level up. | Isolate (harshest) |
 | `lolbin-hunting.kql` | Analyst-driven hunts (rarity/anomaly + network/file correlation, cmd→script, interpreter payloads). | None — human triage |
 | `lolbin-severity-tiers.kql` | **Reference.** Fuller 4-tier, all-stages catalogue with per-line MITRE rationale. Includes later-stage detections (LSASS dump, hive save, `vssadmin delete shadows`, psexec). | None — reference/backlog |
@@ -25,6 +25,15 @@ constantly and legitimately.
 (T1→watch, T2→review, T3→respond, T4→isolate); `{class}` and `{action}` are for
 humans. T4 additionally names its scope (`Sysinternals-privileged-context`)
 because it spans beyond LOLBAS and drops the admin exclusion the others use.
+
+**On the `LOLBAS` segment:** it is loose house-style, not a strict claim. The
+T1-T3 tiers are genuinely LOLBAS (signed binaries abused for an *unintended*
+purpose — proxy execution, download, app-control bypass). The T4 tier already
+carries non-LOLBAS classes (Sysinternals, DC tooling). The defence-impairment
+file drops the `LOLBAS` segment entirely (`t4-defense-impairment-...`) because
+T1562 "Impair Defenses" is a *different tactic*: built-in admin tools used for
+their *intended* function against security controls, not signed-binary abuse.
+New non-LOLBAS classes should follow suit and omit the segment.
 
 The T4 critical tier covers high-confidence malicious privileged activity across
 sources (LOLBAS, Sysinternals-adjacent, DC tooling), so it lives one level up as
@@ -93,7 +102,7 @@ action conflict). See the notes at the bottom of the T4 file.
 
 ### Defence impairment (T1562) — new T4 class
 
-`../t4-lolbas-defense-impairment-privileged-context-isolate.kql` adds a
+`../t4-defense-impairment-privileged-context-isolate.kql` adds a
 defence-impairment class alongside the cred-access/impact/lateral T4 file:
 Defender disable via command line (`Set-MpPreference`, WMIC exclusions), killing
 or stopping named security/logging services (`taskkill`/`sc`/`net`/`wmic` scoped
