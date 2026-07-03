@@ -126,6 +126,8 @@ the Parity agent) is absorbed into the service-control-tamper clause. That claus
 is keyed on **`FileName`** (not `has "sc.exe"`) so it catches `sc stop parity`
 written without the `.exe`, plus PowerShell `Stop-Service`/`Remove-Service`
 wrappers — strictly stronger than the origin hunt — and generalises it across the
-full product set. `parity`/`bit9` are token matches inherited from that hunt;
-swap in Parity's real service/process names once confirmed. Retire the standalone
-hunt (or keep it as the hunt-tier sibling) once this graduates.
+full product set. The confirmed agent binary is `parity.exe`; the service clause
+matches the bare token `parity` (whole-token `has`, so it covers both the
+`sc stop parity` service name and any `parity.exe` reference), while the
+`taskkill` line matches the `parity.exe` image name. Retire the standalone hunt
+(or keep it as the hunt-tier sibling) once this graduates.

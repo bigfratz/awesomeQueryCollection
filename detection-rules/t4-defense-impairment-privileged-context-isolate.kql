@@ -73,26 +73,27 @@ DeviceProcessEvents
             "cyserver.exe", "McPanel.Log.exe", "SentinelMemoryScanner.exe", "SentinelUI.exe",
             "SentinelAgent.exe", "SentinelHelperService.exe", "DRwebcom.exe", "MsSense.exe",
             "MsMpEng.exe", "SenseIR.exe", "elastic-agent.exe", "winlogbeat.exe",
-            "parity.exe", "bit9.exe"))
+            "parity.exe"))
     // Service-control tamper against a NAMED security/logging agent via any of the
     // usual service-control binaries. FOLDS IN the standalone Bit9 Parity tamper hunt
     // (sc/net/net1/powershell/cmd + stop|disable|delete|uninstall) and generalises it
     // to the full product set. Keyed on FileName (not `has "sc.exe"`) on purpose, so
     // it also catches `sc stop parity` written without the .exe and PowerShell
     // Stop-Service/Remove-Service wrappers; `disable`+`config` catch
-    // `sc config <svc> start= disabled`. NOTE: `parity`/`bit9` are token matches
-    // inherited from the origin hunt — swap in Parity's real service/process names
-    // (e.g. "Parity Agent") once confirmed.
+    // `sc config <svc> start= disabled`. NOTE: bare token `parity` (not `parity.exe`)
+    // is deliberate here — `has` is whole-token, so it matches both the service name
+    // in `sc stop parity` and any `parity.exe` reference (the confirmed Bit9 Parity
+    // agent binary).
     or (FileName in~ ("sc.exe", "net.exe", "net1.exe", "powershell.exe", "pwsh.exe", "cmd.exe")
         and ProcessCommandLine has_any ("stop", "delete", "disable", "disabled", "config", "uninstall", "remove")
         and ProcessCommandLine has_any ("sysmon", "sysmondrv", "filebeat", "winlogbeat", "WinDefend",
             "Sense", "cyserver", "LogProcessorService", "ProvisioningClient",
             "SentinelStaticEngine", "SentinelAgent", "SentinelHelperService",
-            "mr2kserv", "elastic-agent", "MDCoreSvc", "Immunet", "parity", "bit9"))
+            "mr2kserv", "elastic-agent", "MDCoreSvc", "Immunet", "parity"))
     // WMIC stopping a security service by name pattern (e.g. Immunet/ClamAV family).
     or (ProcessCommandLine has "wmic" and ProcessCommandLine has "service"
         and ProcessCommandLine has_any ("stopService", "call stop")
-        and ProcessCommandLine has_any ("Immunet", "Sentinel", "Sysmon", "Defender", "clamav", "parity", "bit9"))
+        and ProcessCommandLine has_any ("Immunet", "Sentinel", "Sysmon", "Defender", "clamav", "parity"))
     // --- Blinding logging / neutering binaries (T1562.002 / T1546.012) ---
     // Image File Execution Options "Debugger" hijack: pointing a binary at a stub
     // debugger (ntsd -d, "cmd /c", etc.) freezes/redirects it on launch. Attackers
