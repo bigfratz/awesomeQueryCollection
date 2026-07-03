@@ -156,11 +156,15 @@ DeviceProcessEvents
 | order by FirstSeen desc
 
 // ============================================================
-// Rule: T4-LOLBAS-behavior-defenseimpairmentburst-isolate
+// Rule: T4-behavior-defenseimpairmentburst-isolate
+// (No "LOLBAS" prefix: T1562 Impair-Defenses class, not LOLBAS abuse — see the
+// naming note in t4-defense-impairment-privileged-context-isolate.kql. The
+// other rules in THIS file keep the legacy LOLBAS prefix; it is loose
+// house-style, not a strict claim.)
 // Defence-impairment burst: 3+ DISTINCT defence-impairment techniques on the
 // same device inside 30 minutes (T1562.001 / T1562.002 / T1546.012 / T1112 /
 // T1070.001). This is the behaviour-based sibling of the static
-// t4-lolbas-defense-impairment-privileged-context-isolate file, and the direct
+// t4-defense-impairment-privileged-context-isolate file, and the direct
 // answer to the Huntress i.bat: a single script that disabled Defender, killed
 // Sysmon/Filebeat, IFEO-neutered binaries, downgraded WDigest, disabled IIS
 // logging, uninstalled the WAF and cleared event logs — all in seconds.

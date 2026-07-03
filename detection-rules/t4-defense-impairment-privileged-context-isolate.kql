@@ -1,4 +1,13 @@
-// Rule: T4-LOLBAS-defense-impairment-privileged-context-isolate   [STAGING]
+// Rule: T4-defense-impairment-privileged-context-isolate   [STAGING]
+//
+// NOTE ON NAMING: intentionally NOT prefixed "LOLBAS". These are T1562 "Impair
+// Defenses" techniques — built-in admin tools (taskkill, sc, net, reg, appcmd,
+// Set-MpPreference, wmic) used for their INTENDED function, aimed at security
+// controls. That is distinct from LOLBAS proper (a signed binary abused for an
+// UNINTENDED purpose: proxy execution, download, app-control bypass — certutil,
+// mshta, rundll32, regsvr32, installutil). Same living-off-the-land spirit
+// (no dropped malware), different tactic. This file is a cross-family T4 class
+// alongside the Sysinternals/DC-tooling and behaviour-chain T4 files.
 //
 // Static, single-command defence-impairment detections (MITRE T1562 and
 // neighbours) — disabling/killing security tooling, blinding logging, and the
