@@ -14,7 +14,8 @@ constantly and legitimately.
 | `t3-lolbas-malicious-respond.kql` | **Deploy.** Execution / evasion / initial-access chains; rare or no benign explanation. | Respond (aggressive) |
 | `../t4-lolbas-sysinternals-privileged-context-isolate.kql` | **Staging.** Cross-family critical tier (cred-access / impact / lateral movement) spanning LOLBAS, Sysinternals, and DC tooling. Lives one level up. MINIMAL header (no admin exclusion). | Isolate (harshest) |
 | `t3-lolbas-behavior-chains-respond.kql` | **Staging.** Behavior-based T3: confirmed download chain (process→network→file), discovery burst, contextual persistence escalation. GLOBAL header. | Respond (aggressive) |
-| `../t4-lolbas-behavior-chains-privileged-context-isolate.kql` | **Staging.** Behavior-based T4: anti-recovery chain, tool-agnostic LSASS dump, lateral-movement fan-out. MINIMAL header. Lives one level up. | Isolate (harshest) |
+| `../t4-lolbas-defense-impairment-privileged-context-isolate.kql` | **Staging.** Cross-family defence-impairment tier (T1562): Defender disable via cmdline, kill/stop named security tooling, IFEO Debugger, IIS-log/WAF disable, WDigest downgrade. MINIMAL header. Lives one level up. | Isolate (harshest) |
+| `../t4-lolbas-behavior-chains-privileged-context-isolate.kql` | **Staging.** Behavior-based T4: anti-recovery chain, tool-agnostic LSASS dump, lateral-movement fan-out, defence-impairment burst. MINIMAL header. Lives one level up. | Isolate (harshest) |
 | `lolbin-hunting.kql` | Analyst-driven hunts (rarity/anomaly + network/file correlation, cmd→script, interpreter payloads). | None — human triage |
 | `lolbin-severity-tiers.kql` | **Reference.** Fuller 4-tier, all-stages catalogue with per-line MITRE rationale. Includes later-stage detections (LSASS dump, hive save, `vssadmin delete shadows`, psexec). | None — reference/backlog |
 
@@ -89,3 +90,23 @@ Before graduating T4 from staging: dedupe against T3 — `wevtutil cl` appears i
 both (they overlap only in user context today, since T3 excludes admin/SYSTEM;
 both tiers auto-isolate, so it's a dedup/escalation-attribution concern, not an
 action conflict). See the notes at the bottom of the T4 file.
+
+### Defence impairment (T1562) — new T4 class
+
+`../t4-lolbas-defense-impairment-privileged-context-isolate.kql` adds a
+defence-impairment class alongside the cred-access/impact/lateral T4 file:
+Defender disable via command line (`Set-MpPreference`, WMIC exclusions), killing
+or stopping named security/logging services (`taskkill`/`sc`/`net`/`wmic` scoped
+to product binaries), IFEO `Debugger` hijack, IIS-log/WAF disable via `appcmd`,
+and the WDigest `UseLogonCredential=1` downgrade. The behaviour file adds the
+matching **defence-impairment burst** rule (3+ distinct impairment techniques in
+30 min). Both use the MINIMAL header — these run elevated by design, so admin
+exclusion would blind them.
+
+Overlap to settle before go-live: the **registry-write** Defender tamper
+(`DeviceRegistryEvents`, the `DisableAntiSpyware`/`DisableRealtimeMonitoring`
+policy keys) stays with the existing Sigma-derived registry rule; the new lines
+deliberately cover only the **process-command-line** angle that rule cannot see
+(`Set-MpPreference` is a WMI call, not always a Defender policy-key write). Same
+isolate action either way — route one as incident owner, the other as
+enrichment.
