@@ -119,3 +119,13 @@ deliberately cover only the **process-command-line** angle that rule cannot see
 (`Set-MpPreference` is a WMI call, not always a Defender policy-key write). Same
 isolate action either way — route one as incident owner, the other as
 enrichment.
+
+**Folded-in hunts.** The standalone Bit9 **Parity** tamper hunt
+(`sc`/`net`/`net1`/`powershell`/`cmd` + `stop|disable|delete|uninstall` against
+the Parity agent) is absorbed into the service-control-tamper clause. That clause
+is keyed on **`FileName`** (not `has "sc.exe"`) so it catches `sc stop parity`
+written without the `.exe`, plus PowerShell `Stop-Service`/`Remove-Service`
+wrappers — strictly stronger than the origin hunt — and generalises it across the
+full product set. `parity`/`bit9` are token matches inherited from that hunt;
+swap in Parity's real service/process names once confirmed. Retire the standalone
+hunt (or keep it as the hunt-tier sibling) once this graduates.

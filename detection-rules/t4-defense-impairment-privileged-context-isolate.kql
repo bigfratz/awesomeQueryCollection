@@ -65,29 +65,34 @@ DeviceProcessEvents
     // "carve out a safe folder for my tools" step (T1562.001). Near-zero benign.
     or (ProcessCommandLine has "MpPreference" and ProcessCommandLine has "Add"
         and ProcessCommandLine has_any ("ExclusionPath", "ExclusionExtension", "ExclusionProcess"))
-    // --- Killing / stopping security + logging tooling (T1562.001) ---
+    // --- Killing / stopping / uninstalling security + logging tooling (T1562.001) ---
     // taskkill targeting named EDR/AV/logging processes. Scoped to product binaries
     // so it fires on "kill my defences", not on routine process management.
     or (ProcessCommandLine has "taskkill.exe"
         and ProcessCommandLine has_any ("sysmon.exe", "sysmon64.exe", "filebeat.exe",
             "cyserver.exe", "McPanel.Log.exe", "SentinelMemoryScanner.exe", "SentinelUI.exe",
             "SentinelAgent.exe", "SentinelHelperService.exe", "DRwebcom.exe", "MsSense.exe",
-            "MsMpEng.exe", "SenseIR.exe", "elastic-agent.exe", "winlogbeat.exe"))
-    // sc.exe stop/delete/config targeting named security/logging services. Same
-    // scoping rationale: stopping/deleting *these* services is the impairment,
-    // whereas generic sc create/config lives in T2.
-    or (ProcessCommandLine has "sc.exe" and ProcessCommandLine has_any ("stop", "delete", "config")
-        and ProcessCommandLine has_any ("sysmon", "sysmondrv", "filebeat", "WinDefend",
+            "MsMpEng.exe", "SenseIR.exe", "elastic-agent.exe", "winlogbeat.exe",
+            "parity.exe", "bit9.exe"))
+    // Service-control tamper against a NAMED security/logging agent via any of the
+    // usual service-control binaries. FOLDS IN the standalone Bit9 Parity tamper hunt
+    // (sc/net/net1/powershell/cmd + stop|disable|delete|uninstall) and generalises it
+    // to the full product set. Keyed on FileName (not `has "sc.exe"`) on purpose, so
+    // it also catches `sc stop parity` written without the .exe and PowerShell
+    // Stop-Service/Remove-Service wrappers; `disable`+`config` catch
+    // `sc config <svc> start= disabled`. NOTE: `parity`/`bit9` are token matches
+    // inherited from the origin hunt — swap in Parity's real service/process names
+    // (e.g. "Parity Agent") once confirmed.
+    or (FileName in~ ("sc.exe", "net.exe", "net1.exe", "powershell.exe", "pwsh.exe", "cmd.exe")
+        and ProcessCommandLine has_any ("stop", "delete", "disable", "disabled", "config", "uninstall", "remove")
+        and ProcessCommandLine has_any ("sysmon", "sysmondrv", "filebeat", "winlogbeat", "WinDefend",
             "Sense", "cyserver", "LogProcessorService", "ProvisioningClient",
             "SentinelStaticEngine", "SentinelAgent", "SentinelHelperService",
-            "mr2kserv", "elastic-agent", "MDCoreSvc"))
+            "mr2kserv", "elastic-agent", "MDCoreSvc", "Immunet", "parity", "bit9"))
     // WMIC stopping a security service by name pattern (e.g. Immunet/ClamAV family).
     or (ProcessCommandLine has "wmic" and ProcessCommandLine has "service"
         and ProcessCommandLine has_any ("stopService", "call stop")
-        and ProcessCommandLine has_any ("Immunet", "Sentinel", "Sysmon", "Defender", "clamav"))
-    // net stop of a named security service — the net.exe/net1.exe sibling of sc stop.
-    or (ProcessCommandLine has_any ("net.exe", "net1.exe") and ProcessCommandLine has "stop"
-        and ProcessCommandLine has_any ("Sense", "WinDefend", "Sysmon", "Sentinel", "filebeat"))
+        and ProcessCommandLine has_any ("Immunet", "Sentinel", "Sysmon", "Defender", "clamav", "parity", "bit9"))
     // --- Blinding logging / neutering binaries (T1562.002 / T1546.012) ---
     // Image File Execution Options "Debugger" hijack: pointing a binary at a stub
     // debugger (ntsd -d, "cmd /c", etc.) freezes/redirects it on launch. Attackers
