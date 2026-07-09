@@ -100,3 +100,35 @@ DeviceProcessEvents
 | where not(ProcessCommandLine has_any ("\\AppData\\Roaming\\XNP\\lsp-home", "ElsterAuthenticator", "BNOTK SAK lite"))
 | project Timestamp, DeviceName, AccountName, FileName, ProcessCommandLine, InitiatingProcessFileName
 | sort by Timestamp desc
+
+
+// ------------------------------------------------------------
+// 6. Suspicious parent -> LOLBin sweep (T1566 / T1204 / T1059) — the broad
+//    triage version of the T3 malspam-chain alert. The alert is deliberately
+//    scoped (document apps + archivers + script hosts + mshta -> LOLBin,
+//    High/respond); this hunt widens the parent set to ALSO include Outlook
+//    and the browsers — which the alert drops as too noisy for automation, but
+//    which are worth eyeballing in the rare tail.
+//    Two tuning choices carried over from the alert (do NOT "helpfully" undo):
+//      - explorer.exe is EXCLUDED as a parent — normal double-click / file-
+//        association launches would bury the interesting tail even here.
+//      - RunAction.vbs (contentACCESS Outlook add-in) is a known-good FP.
+//    Aggregated by parent/child/command line and sorted rarest-first, so the
+//    long-tail one-offs surface at the top. Hunt only — triage the results.
+// ------------------------------------------------------------
+let lolbin_children = dynamic(["certutil.exe", "bitsadmin.exe", "mshta.exe", "rundll32.exe",
+    "regsvr32.exe", "wscript.exe", "cscript.exe", "powershell.exe", "pwsh.exe",
+    "curl.exe", "msiexec.exe", "installutil.exe", "wmic.exe", "msbuild.exe"]);
+let suspicious_parents = dynamic(["winword.exe", "excel.exe", "powerpnt.exe", "onenote.exe",
+    "msaccess.exe", "mspub.exe", "visio.exe", "acrord32.exe", "7z.exe", "winrar.exe",
+    "mshta.exe", "wscript.exe", "cscript.exe",
+    "outlook.exe", "chrome.exe", "msedge.exe", "firefox.exe", "iexplore.exe", "brave.exe"]);
+DeviceProcessEvents
+| where Timestamp > ago(7d)
+| where FileName in~ (lolbin_children)
+| where InitiatingProcessFileName in~ (suspicious_parents)   // explorer.exe intentionally omitted
+| where not(ProcessCommandLine contains @"contentACCESSForm\RunAction.vbs")
+| summarize Count = count(), Devices = dcount(DeviceId), FirstSeen = min(Timestamp), LastSeen = max(Timestamp),
+    SampleCmd = any(ProcessCommandLine)
+    by ParentProcess = InitiatingProcessFileName, Child = FileName, ProcessCommandLine
+| sort by Count asc   // rarest parent->child command lines first — the interesting tail
