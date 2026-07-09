@@ -1,9 +1,11 @@
-# LOLBAS detection rules
+# Detection rules (KQL, tiered T1–T4)
 
-KQL detections for living-off-the-land binary/script (LOLBAS) abuse over
-Microsoft Defender `DeviceProcessEvents`. Detections key on **argument patterns
-and process lineage**, not binary names alone — the signed binaries here run
-constantly and legitimately.
+KQL detections over Microsoft Defender `DeviceProcessEvents` (plus a few other
+`Device*` tables). The core is living-off-the-land binary/script (LOLBAS) abuse;
+the T4 tier adds cross-family classes (Sysinternals / DC tooling, T1562 defence
+impairment, behaviour chains). Detections key on **argument patterns and process
+lineage**, not binary names alone — the signed binaries here run constantly and
+legitimately. All rules live in this one folder, prefixed by tier (`t1-` … `t4-`).
 
 ## Files
 
@@ -12,10 +14,10 @@ constantly and legitimately.
 | `t1-lolbas-signals-watch.kql` | **Deploy.** Discovery/context + unusual tooling — lowest-confidence signals. | Watch (enrichment/ticketing) |
 | `t2-lolbas-suspicious-review.kql` | **Deploy.** Dual-use techniques + light persistence; needs a second signal to escalate. | Review (analyst) |
 | `t3-lolbas-malicious-respond.kql` | **Deploy.** Execution / evasion / initial-access chains; rare or no benign explanation. | Respond (aggressive) |
-| `../t4-lolbas-sysinternals-privileged-context-isolate.kql` | **Staging.** Cross-family critical tier (cred-access / impact / lateral movement) spanning LOLBAS, Sysinternals, and DC tooling. Lives one level up. MINIMAL header (no admin exclusion). | Isolate (harshest) |
 | `t3-lolbas-behavior-chains-respond.kql` | **Staging.** Behavior-based T3: confirmed download chain (process→network→file), discovery burst, contextual persistence escalation. GLOBAL header. | Respond (aggressive) |
-| `../t4-defense-impairment-privileged-context-isolate.kql` | **Staging.** Cross-family defence-impairment tier (T1562) — **not LOLBAS** (see naming note): Defender disable via cmdline, kill/stop named security tooling, IFEO Debugger, IIS-log/WAF disable, WDigest downgrade. MINIMAL header. Lives one level up. | Isolate (harshest) |
-| `../t4-lolbas-behavior-chains-privileged-context-isolate.kql` | **Staging.** Behavior-based T4: anti-recovery chain, tool-agnostic LSASS dump, lateral-movement fan-out, defence-impairment burst. MINIMAL header. Lives one level up. | Isolate (harshest) |
+| `t4-lolbas-sysinternals-privileged-context-isolate.kql` | **Staging.** Cross-family critical tier (cred-access / impact / lateral movement) spanning LOLBAS, Sysinternals, and DC tooling. MINIMAL header (no admin exclusion). | Isolate (harshest) |
+| `t4-defense-impairment-privileged-context-isolate.kql` | **Staging.** Cross-family defence-impairment tier (T1562) — **not LOLBAS** (see naming note): Defender disable via cmdline, kill/stop named security tooling, IFEO Debugger, IIS-log/WAF disable, WDigest downgrade. MINIMAL header. | Isolate (harshest) |
+| `t4-lolbas-behavior-chains-privileged-context-isolate.kql` | **Staging.** Behavior-based T4: anti-recovery chain, tool-agnostic LSASS dump, lateral-movement fan-out, defence-impairment burst. MINIMAL header. | Isolate (harshest) |
 | `lolbin-hunting.kql` | Analyst-driven hunts (rarity/anomaly + network/file correlation, cmd→script, interpreter payloads). | None — human triage |
 | `lolbin-severity-tiers.kql` | **Reference.** Fuller 4-tier, all-stages catalogue with per-line MITRE rationale. Includes later-stage detections (LSASS dump, hive save, `vssadmin delete shadows`, psexec). | None — reference/backlog |
 
@@ -36,8 +38,8 @@ their *intended* function against security controls, not signed-binary abuse.
 New non-LOLBAS classes should follow suit and omit the segment.
 
 The T4 critical tier covers high-confidence malicious privileged activity across
-sources (LOLBAS, Sysinternals-adjacent, DC tooling), so it lives one level up as
-`../t4-lolbas-sysinternals-privileged-context-isolate.kql` (currently in staging).
+sources (LOLBAS, Sysinternals-adjacent, DC tooling), so it is named
+`t4-lolbas-sysinternals-privileged-context-isolate.kql` (currently in staging).
 It uses the separate **MINIMAL** exclusion header — same as GLOBAL minus the
 account exclusion — because its detections run elevated by design. "Privileged
 context" = does not *exclude* privileged accounts (still fires on any account);
@@ -94,7 +96,7 @@ Conventions specific to behavior rules:
 ## Later ATT&CK stages → T4 (staging)
 
 The later-stage detections (credential access, destructive impact, lateral
-movement) live in `../t4-lolbas-sysinternals-privileged-context-isolate.kql`,
+movement) live in `t4-lolbas-sysinternals-privileged-context-isolate.kql`,
 which drops the admin/SYSTEM exclusion so it can see the elevated context these
 run in. `lolbin-severity-tiers.kql` remains the fuller catalogue/reference.
 
@@ -105,7 +107,7 @@ lost). See the notes at the bottom of the T4 file.
 
 ### Defence impairment (T1562) — new T4 class
 
-`../t4-defense-impairment-privileged-context-isolate.kql` adds a
+`t4-defense-impairment-privileged-context-isolate.kql` adds a
 defence-impairment class alongside the cred-access/impact/lateral T4 file:
 Defender disable via command line (`Set-MpPreference`, WMIC exclusions), killing
 or stopping named security/logging services (`taskkill`/`sc`/`net`/`wmic` scoped

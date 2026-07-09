@@ -10,8 +10,7 @@
 // (interpretation #1 — fires on any account, does not exclude privileged
 // ones). Cred theft, anti-recovery, and lateral movement run elevated by
 // design; excluding admin/SYSTEM here would blind the rule to its own
-// target. Lives one level above lolbin/ like the static T4, because these
-// span beyond LOLBAS (any process, Sysinternals, remote-exec tooling).
+// target. Spans beyond LOLBAS (any process, Sysinternals, remote-exec tooling).
 //
 // Response tier: isolate. Keep in STAGING until volume is understood.
 // Deployment shape: written for Sentinel scheduled rules; blocks 1 and 3

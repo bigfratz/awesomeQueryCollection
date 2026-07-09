@@ -31,19 +31,21 @@ DeviceProcessEvents
         and ProcessCommandLine has_any ("-enc", "-encodedcommand", "frombase64string", "downloadstring", "downloadfile", "net.webclient"))
     or (ProcessCommandLine has "powershell.exe" and ProcessCommandLine matches regex "(?i).*i(e|x)(.*?)\\(")
     // NOTE: procdump -ma/lsass moved out — it's Sysinternals (own rule) + credential access,
-    // so it belongs in T4 (all-context) not here. See ../t4-lolbas-sysinternals-privileged-context-isolate.kql.
+    // so it belongs in T4 (all-context) not here. See t4-lolbas-sysinternals-privileged-context-isolate.kql.
     or (ProcessCommandLine has "regsvr32.exe" and ProcessCommandLine matches regex "(?i).*\\/i:(http|https).*")
     or (ProcessCommandLine has "rundll32.exe" and ProcessCommandLine has_any ("javascript:", "vbscript:", "RunHTMLApplication"))
     // NOTE: wevtutil cl (event-log clear) moved to T4 — it runs in SYSTEM/admin context that the
     // T3 GLOBAL header excludes, so the no-exclusion T4 header is the right scope. Was duplicated
-    // in both tiers; T4 now solely owns it. See ../t4-lolbas-sysinternals-privileged-context-isolate.kql.
+    // in both tiers; T4 now solely owns it. See t4-lolbas-sysinternals-privileged-context-isolate.kql.
     or (ProcessCommandLine has "wlrmdr.exe" and ProcessCommandLine has_all ("-s", "-f", "-t", "-m", "-a", "-u"))
     // NEW: parent -> child malspam / macro chain (initial access -> execution). Document apps,
-    // archivers, and script hosts directly spawning a LOLBin. Outlook/browsers deliberately
-    // excluded (too noisy). RunAction.vbs is the contentACCESS add-in (legit).
+    // archivers, and script hosts directly spawning a LOLBin. mshta.exe is included as a PARENT
+    // (HTA spawning another LOLBin, e.g. mshta -> powershell — a common second-stage hop).
+    // Outlook/browsers deliberately excluded (too noisy) and explorer.exe excluded (normal
+    // file-association double-click launches). RunAction.vbs is the contentACCESS add-in (legit).
     or (InitiatingProcessFileName in~ ("winword.exe", "excel.exe", "powerpnt.exe", "onenote.exe",
             "msaccess.exe", "mspub.exe", "visio.exe", "acrord32.exe", "7z.exe", "winrar.exe",
-            "wscript.exe", "cscript.exe")
+            "mshta.exe", "wscript.exe", "cscript.exe")
         and FileName in~ ("certutil.exe", "bitsadmin.exe", "mshta.exe", "rundll32.exe", "regsvr32.exe",
             "wscript.exe", "cscript.exe", "powershell.exe", "pwsh.exe", "curl.exe", "msiexec.exe",
             "installutil.exe", "wmic.exe", "msbuild.exe")
