@@ -14,7 +14,7 @@
 // ------------------------------------------------------------
 let lolbins = dynamic(["certutil.exe", "bitsadmin.exe", "mshta.exe", "regsvr32.exe",
     "installutil.exe", "regasm.exe", "regsvcs.exe", "msbuild.exe",
-    "cmstp.exe", "odbcconf.exe", "regsvcs.exe", "wuauclt.exe", "pcalua.exe"]);
+    "cmstp.exe", "odbcconf.exe", "wuauclt.exe", "pcalua.exe"]);
 DeviceProcessEvents
 | where Timestamp > ago(30d)
 | where FileName in~ (lolbins)

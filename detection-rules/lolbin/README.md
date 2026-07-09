@@ -54,7 +54,10 @@ light persistence). Conventions shared across all three:
 - **Always-false seed** (`(1 == 2)`) so every detection line starts with `or`
   and can be toggled/removed without breaking the OR chain.
 - **No cross-tier overlap** — each command lives in exactly one rule (e.g.
-  `wevtutil qe` → T1, `wevtutil cl` → T3).
+  `wevtutil qe` → T1, `wevtutil cl` → T4). Detection lines within each of these
+  flat single-command rules are kept **alphabetical by binary** so the same
+  command isn't accidentally added twice. (The tactic-grouped T4 files and the
+  behaviour files organise by MITRE tactic / rule block instead.)
 
 ### Before deploying
 1. Set the `<svc_account_n>` account placeholders in the header (all three) and
@@ -95,10 +98,10 @@ movement) live in `../t4-lolbas-sysinternals-privileged-context-isolate.kql`,
 which drops the admin/SYSTEM exclusion so it can see the elevated context these
 run in. `lolbin-severity-tiers.kql` remains the fuller catalogue/reference.
 
-Before graduating T4 from staging: dedupe against T3 — `wevtutil cl` appears in
-both (they overlap only in user context today, since T3 excludes admin/SYSTEM;
-both tiers auto-isolate, so it's a dedup/escalation-attribution concern, not an
-action conflict). See the notes at the bottom of the T4 file.
+`wevtutil cl` T3/T4 duplication — **resolved** (2026-07 dedup): removed from T3,
+T4 is now the sole owner (log-clear runs in the SYSTEM/admin context the T3
+header excludes, so the no-exclusion T4 header is the right scope; no coverage
+lost). See the notes at the bottom of the T4 file.
 
 ### Defence impairment (T1562) — new T4 class
 

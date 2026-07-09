@@ -20,21 +20,23 @@ DeviceProcessEvents
     or (ProcessCommandLine has "bcdedit.exe" and ProcessCommandLine has_any ("/set", "/deletevalue"))
     or (ProcessCommandLine has "bitsadmin.exe" and ProcessCommandLine has_any ("transfer", "download"))
     or (ProcessCommandLine has "certutil.exe" and ProcessCommandLine matches regex "(?i).*urlcache.*split.*f.*")
-    // FIX: was (has "cmd.exe" and has "-enc") — "-enc" is a PowerShell switch. Now targets
-    // powershell/pwsh plus the download-cradle verbs.
-    or (ProcessCommandLine has_any ("powershell.exe", "pwsh.exe")
-        and ProcessCommandLine has_any ("-enc", "-encodedcommand", "frombase64string", "downloadstring", "downloadfile", "net.webclient"))
     or (ProcessCommandLine has "installutil.exe")
     or (ProcessCommandLine has "mavinject.exe")
     or (ProcessCommandLine has "mshta.exe" and ProcessCommandLine has_any ("http", "https"))
     or (ProcessCommandLine has "msiexec.exe" and ProcessCommandLine matches regex "(?i).*(http|https).*")
     or (ProcessCommandLine has "netsh.exe" and ProcessCommandLine has "interface portproxy add")
+    // FIX: was (has "cmd.exe" and has "-enc") — "-enc" is a PowerShell switch. Now targets
+    // powershell/pwsh plus the download-cradle verbs.
+    or (ProcessCommandLine has_any ("powershell.exe", "pwsh.exe")
+        and ProcessCommandLine has_any ("-enc", "-encodedcommand", "frombase64string", "downloadstring", "downloadfile", "net.webclient"))
     or (ProcessCommandLine has "powershell.exe" and ProcessCommandLine matches regex "(?i).*i(e|x)(.*?)\\(")
     // NOTE: procdump -ma/lsass moved out — it's Sysinternals (own rule) + credential access,
     // so it belongs in T4 (all-context) not here. See ../t4-lolbas-sysinternals-privileged-context-isolate.kql.
     or (ProcessCommandLine has "regsvr32.exe" and ProcessCommandLine matches regex "(?i).*\\/i:(http|https).*")
     or (ProcessCommandLine has "rundll32.exe" and ProcessCommandLine has_any ("javascript:", "vbscript:", "RunHTMLApplication"))
-    or (ProcessCommandLine has "wevtutil.exe" and ProcessCommandLine has "cl")   // log clear; "qe" (read) lives in the T1 rule
+    // NOTE: wevtutil cl (event-log clear) moved to T4 — it runs in SYSTEM/admin context that the
+    // T3 GLOBAL header excludes, so the no-exclusion T4 header is the right scope. Was duplicated
+    // in both tiers; T4 now solely owns it. See ../t4-lolbas-sysinternals-privileged-context-isolate.kql.
     or (ProcessCommandLine has "wlrmdr.exe" and ProcessCommandLine has_all ("-s", "-f", "-t", "-m", "-a", "-u"))
     // NEW: parent -> child malspam / macro chain (initial access -> execution). Document apps,
     // archivers, and script hosts directly spawning a LOLBin. Outlook/browsers deliberately
