@@ -17,11 +17,11 @@ DeviceProcessEvents
 | where
     (1 == 2)   // inert seed — every detection below starts with `or`, so any line toggles freely
     or (ProcessCommandLine has "arp.exe" and ProcessCommandLine has "/a")
+    or (ProcessCommandLine has "dnscmd.exe")
     or (ProcessCommandLine has "ipconfig.exe" and ProcessCommandLine has "/displaydns")
     or (ProcessCommandLine has "netstat" and ProcessCommandLine has_any ("-an", "-o"))
-    or (ProcessCommandLine has "whoami.exe" and ProcessCommandLine has_any ("/priv", "/groups"))
-    or (ProcessCommandLine has "wevtutil.exe" and ProcessCommandLine has "qe")   // read-only query; "cl" (clear) lives in the T3 rule
-    or (ProcessCommandLine has "dnscmd.exe")
     or (ProcessCommandLine has "nmap.exe")
+    or (ProcessCommandLine has "wevtutil.exe" and ProcessCommandLine has "qe")   // read-only query; "cl" (clear) lives in the T4 rule
+    or (ProcessCommandLine has "whoami.exe" and ProcessCommandLine has_any ("/priv", "/groups"))
 | extend Severity = "Low"
 | order by Timestamp desc

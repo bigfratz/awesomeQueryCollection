@@ -44,7 +44,7 @@ DeviceProcessEvents
     or (ProcessCommandLine has "vssadmin.exe" and ProcessCommandLine has "delete" and ProcessCommandLine has "shadows")  // T1490 shadow-copy deletion
     or (ProcessCommandLine has "wbadmin.exe" and ProcessCommandLine has "delete" and ProcessCommandLine has_any ("catalog", "backup", "systemstatebackup"))  // T1490 backup deletion
     // --- Defense evasion / anti-forensics (often SYSTEM) ---
-    or (ProcessCommandLine has "wevtutil.exe" and ProcessCommandLine has "cl")                             // T1070.001 clear event log
+    or (ProcessCommandLine has "wevtutil.exe" and ProcessCommandLine has "cl")                             // T1070.001 clear event log [sole owner — removed from T3]
     or (ProcessCommandLine has "fsutil.exe" and ProcessCommandLine has "usn" and ProcessCommandLine has "deletejournal")  // T1070 USN journal wipe
     // --- Lateral movement ---
     or (ProcessCommandLine has_any ("psexec.exe", "psexec64.exe", "paexec.exe"))                           // T1569.002 / T1021.002 service exec [Sysinternals/clone]
@@ -54,11 +54,11 @@ DeviceProcessEvents
 | order by Timestamp desc
 
 // --- OVERLAP NOTES (resolve before graduating from staging) ---
-// 1. wevtutil cl also lives in T3 (admin-excluded there), so today they overlap only in
-//    user context. NOTE: T3 ALSO auto-isolates, so a double-fire is not a conflicting action
-//    (both isolate; isolation is idempotent) — it's a DEDUP / escalation-attribution concern:
-//    avoid the same event opening two incidents in two escalation chains. Decide which tier
-//    owns wevtutil cl before go-live.
+// 1. wevtutil cl ownership — RESOLVED (2026-07 dedup): removed from T3, this T4 rule is the
+//    sole owner. Rationale: log-clear runs in SYSTEM/admin context that the T3 GLOBAL header
+//    excludes, so the no-account-exclusion T4 header is the correct scope, and it already
+//    covered the non-admin case too — so removing the T3 line lost no coverage. (It remains a
+//    constituent of the behaviour burst rules by design — chains reuse owned commands.)
 // 2. procdump + psexec are also in the separate Sysinternals rule, which excludes admin.
 //    Intended division: Sysinternals rule = generic/user-context usage; this rule = the
 //    weaponized argument patterns in admin/SYSTEM context the Sysinternals rule drops.
