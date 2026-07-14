@@ -5,6 +5,15 @@
 // severity -> automation trigger), these queries surface candidates for
 // human review: rare/anomalous usage and corroborating network/file
 // activity. No Severity field — triage is the point of running these.
+//
+// SCOPE: each hunt reads HuntProcessEvents() (shared-functions.kql) — the
+// device-scoped root that shares ONLY the DeviceName prefix, applying NONE of
+// the account/noise exclusions the tiered rules use. That is deliberate: a hunt
+// wants full visibility of the noise the detections suppress, and it must never
+// be silently narrowed when someone tunes a detection exclusion. Deploy
+// shared-functions.kql first (same one-place dependency as the tiered rules).
+// The DeviceNetworkEvents/DeviceFileEvents joins stay raw — the join on DeviceId
+// against the scoped root already limits them to in-scope devices.
 // ============================================================
 
 
@@ -15,7 +24,7 @@
 let lolbins = dynamic(["certutil.exe", "bitsadmin.exe", "mshta.exe", "regsvr32.exe",
     "installutil.exe", "regasm.exe", "regsvcs.exe", "msbuild.exe",
     "cmstp.exe", "odbcconf.exe", "wuauclt.exe", "pcalua.exe"]);
-DeviceProcessEvents
+HuntProcessEvents()   // device-scoped, no exclusions; see shared-functions.kql
 | where Timestamp > ago(30d)
 | where FileName in~ (lolbins)
 | summarize ExecCount = count(), Devices = dcount(DeviceId), SampleCmd = any(ProcessCommandLine)
@@ -31,7 +40,7 @@ DeviceProcessEvents
 // ------------------------------------------------------------
 let lookback = 7d;
 let lolbins = dynamic(["certutil.exe", "bitsadmin.exe", "mshta.exe", "curl.exe", "wget.exe", "powershell.exe", "pwsh.exe"]);
-DeviceProcessEvents
+HuntProcessEvents()   // device-scoped, no exclusions; see shared-functions.kql
 | where Timestamp > ago(lookback)
 | where FileName in~ (lolbins)
 | project ProcessTime = Timestamp, DeviceId, DeviceName, AccountName, FileName, ProcessCommandLine,
@@ -53,7 +62,7 @@ DeviceProcessEvents
 // ------------------------------------------------------------
 let lookback = 7d;
 let lolbins = dynamic(["certutil.exe", "bitsadmin.exe", "mshta.exe", "curl.exe", "wget.exe"]);
-DeviceProcessEvents
+HuntProcessEvents()   // device-scoped, no exclusions; see shared-functions.kql
 | where Timestamp > ago(lookback)
 | where FileName in~ (lolbins)
 | project ProcessTime = Timestamp, DeviceId, DeviceName, AccountName, FileName, ProcessCommandLine
@@ -75,7 +84,7 @@ DeviceProcessEvents
 //    surface it aggregated by command line rather than per-event, and drop
 //    the known-good CompanyPortal launcher.
 // ------------------------------------------------------------
-DeviceProcessEvents
+HuntProcessEvents()   // device-scoped, no exclusions; see shared-functions.kql
 | where Timestamp > ago(7d)
 | where InitiatingProcessFileName == "cmd.exe"
     and FileName in~ ("powershell.exe", "pwsh.exe", "wscript.exe", "cscript.exe")
@@ -93,7 +102,7 @@ DeviceProcessEvents
 //    list to genuinely-suspicious tokens (dropped bare invoke/payload/http).
 //    Known-good local apps excluded. Hunt only — triage the results.
 // ------------------------------------------------------------
-DeviceProcessEvents
+HuntProcessEvents()   // device-scoped, no exclusions; see shared-functions.kql
 | where Timestamp > ago(7d)
 | where FileName in~ ("perl.exe", "python.exe", "ruby.exe")
 | where ProcessCommandLine matches regex @"(?i)(base64|shellcode|-e\s|exec\(|socket|/dev/tcp|frombase64|iex|invoke-expression|downloadstring)"
@@ -123,7 +132,7 @@ let suspicious_parents = dynamic(["winword.exe", "excel.exe", "powerpnt.exe", "o
     "msaccess.exe", "mspub.exe", "visio.exe", "acrord32.exe", "7z.exe", "winrar.exe",
     "mshta.exe", "wscript.exe", "cscript.exe",
     "outlook.exe", "chrome.exe", "msedge.exe", "firefox.exe", "iexplore.exe", "brave.exe"]);
-DeviceProcessEvents
+HuntProcessEvents()   // device-scoped, no exclusions; see shared-functions.kql
 | where Timestamp > ago(7d)
 | where FileName in~ (lolbin_children)
 | where InitiatingProcessFileName in~ (suspicious_parents)   // explorer.exe intentionally omitted

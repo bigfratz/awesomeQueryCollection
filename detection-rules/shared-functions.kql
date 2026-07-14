@@ -57,3 +57,19 @@ let FilteredDeviceEvents = (excludeAdmin: bool = true) {
     | where not(excludeAdmin and InitiatingProcessAccountName has_any ("adm_", "administrator", "system", "lokaler dienst", "defaultuser0", "<svc_account_1>", "<svc_account_2>"))
     | where not(InitiatingProcessParentFileName == "x" and (InitiatingProcessCommandLine contains "x" and InitiatingProcessCommandLine contains "x"))
 };
+
+
+// HuntProcessEvents() — device-scoped ONLY, NO account/command-line exclusions.
+// For the analyst hunts (lolbin-hunting.kql), which deliberately want full
+// visibility of the noise the tiered rules suppress. It shares just the
+// DeviceName prefix, so "which devices are in scope" is still edited in one
+// place, but applies NONE of the account or noise filters — on purpose: tuning
+// a DETECTION exclusion must never silently narrow a HUNT. There is no
+// excludeAdmin parameter because a hunt never excludes admins.
+// (If a hunt joins DeviceNetworkEvents/DeviceFileEvents, leave those raw — the
+// `join ... on DeviceId` against this scoped root already limits them to
+// in-scope devices.)
+let HuntProcessEvents = () {
+    DeviceProcessEvents
+    | where DeviceName startswith "X"
+};

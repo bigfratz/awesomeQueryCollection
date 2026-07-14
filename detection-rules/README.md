@@ -11,7 +11,7 @@ legitimately. All rules live in this one folder, prefixed by tier (`t1-` … `t4
 
 | File | Purpose | Automation action |
 |------|---------|-------------------|
-| `shared-functions.kql` | **Deploy first.** Saved functions holding the suite's exclusions in one place: `FilteredProcessEvents(excludeAdmin)` and its `FilteredDeviceEvents` sibling. Every tiered rule calls these. | None — infrastructure |
+| `shared-functions.kql` | **Deploy first.** Saved functions holding the suite's shared scoping in one place: `FilteredProcessEvents(excludeAdmin)` + its `FilteredDeviceEvents` sibling (device prefix **and** exclusions, for the tiered rules), and `HuntProcessEvents()` (device prefix **only**, no exclusions, for the hunts). | None — infrastructure |
 | `t1-lolbas-signals-watch.kql` | **Deploy.** Discovery/context + unusual tooling — lowest-confidence signals. | Watch (enrichment/ticketing) |
 | `t2-lolbas-suspicious-review.kql` | **Deploy.** Dual-use techniques + light persistence; needs a second signal to escalate. | Review (analyst) |
 | `t3-lolbas-malicious-respond.kql` | **Deploy.** Execution / evasion / initial-access chains; rare or no benign explanation. | Respond (aggressive) |
@@ -19,7 +19,7 @@ legitimately. All rules live in this one folder, prefixed by tier (`t1-` … `t4
 | `t4-lolbas-sysinternals-privileged-context-isolate.kql` | **Staging.** Cross-family critical tier (cred-access / impact / lateral movement) spanning LOLBAS, Sysinternals, and DC tooling. MINIMAL header (no admin exclusion). | Isolate (harshest) |
 | `t4-defense-impairment-privileged-context-isolate.kql` | **Staging.** Cross-family defence-impairment tier (T1562) — **not LOLBAS** (see naming note): Defender disable via cmdline, kill/stop named security tooling, IFEO Debugger, IIS-log/WAF disable, WDigest downgrade. MINIMAL header. | Isolate (harshest) |
 | `t4-lolbas-behavior-chains-privileged-context-isolate.kql` | **Staging.** Behavior-based T4: anti-recovery chain, tool-agnostic LSASS dump, lateral-movement fan-out, defence-impairment burst. MINIMAL header. | Isolate (harshest) |
-| `lolbin-hunting.kql` | Analyst-driven hunts (rarity/anomaly + network/file correlation, cmd→script, interpreter payloads). | None — human triage |
+| `lolbin-hunting.kql` | Analyst-driven hunts (rarity/anomaly + network/file correlation, cmd→script, interpreter payloads). Reads `HuntProcessEvents()` — device-scoped only, **no** exclusions (hunts want the noise). | None — human triage |
 | `lolbin-severity-tiers.kql` | **Reference.** Fuller 4-tier, all-stages catalogue with per-line MITRE rationale. Includes later-stage detections (LSASS dump, hive save, `vssadmin delete shadows`, psexec). | None — reference/backlog |
 
 ## Naming convention
@@ -51,13 +51,19 @@ it is not scoped admin-only.
 Scoped to the first few ATT&CK stages (recon / initial access / execution /
 light persistence). Conventions shared across all three:
 
-- **Shared exclusions via a saved function** — every rule opens with
+- **Shared scoping via saved functions** — every rule opens with
   `FilteredProcessEvents(true)` instead of a copy-pasted exclusion header, so the
   device prefix, service-account list, and noise filters live in exactly one
   place (`shared-functions.kql`). The T4 tier passes `false` (MINIMAL — keeps
   every account, because those techniques run elevated). The DeviceEvents-based
-  rules use the `FilteredDeviceEvents` sibling. **Deploy `shared-functions.kql`
-  first** — the rules depend on those functions existing in the workspace.
+  rules use the `FilteredDeviceEvents` sibling. The hunts route through
+  `HuntProcessEvents()` — same file, but device-prefix scoping **only, no
+  exclusions**, so hunts still agree on which devices are in scope yet keep the
+  full noise (tuning a detection exclusion can never silently narrow a hunt).
+  `lolbin-severity-tiers.kql` stays raw on purpose — it is a standalone per-line
+  reference catalogue, not a deployed query, so it takes no function dependency.
+  **Deploy `shared-functions.kql` first** — the rules and hunts depend on those
+  functions existing in the workspace.
 - **Always-false seed** (`(1 == 2)`) so every detection line starts with `or`
   and can be toggled/removed without breaking the OR chain.
 - **No cross-tier overlap** — each command lives in exactly one rule (e.g.
