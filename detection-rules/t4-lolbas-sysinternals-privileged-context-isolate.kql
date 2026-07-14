@@ -15,19 +15,12 @@
 //
 // Response tier: isolate. Keep in STAGING until volume is understood, then
 // dedupe against T3 / the Sysinternals rule (see overlap notes at bottom).
-DeviceProcessEvents
-// === MINIMAL EXCLUSIONS v1 — NO account exclusion (intentional) ===
-| where DeviceName startswith "X"   // scope to your STAGING device prefix first
-// NOTE: deliberately no InitiatingProcessAccountName exclusion here — admin/SYSTEM
-// context is exactly where these techniques fire. Do not "helpfully" re-add it.
-// (For an admin-ONLY variant instead, replace this note with:
-//   | where InitiatingProcessAccountName has_any ("adm_", "administrator", "system", ...) )
-| where isnotempty(InitiatingProcessAccountName)
-//| where not(InitiatingProcessFolderPath has_any ("C:\\Program Files (x86)\\Microsoft Visual Studio",
-//    "C:\\Program Files\\Microsoft Visual Studio\\2022\\Professional\\"))
-| where not(InitiatingProcessParentFileName == "x" and (InitiatingProcessCommandLine contains "x" and InitiatingProcessCommandLine contains "x"))
-| where not(ProcessCommandLine matches regex @"x")
-// === END MINIMAL EXCLUSIONS v1 ===
+// Shared exclusions via the saved function FilteredProcessEvents (see
+// shared-functions.kql). excludeAdmin = FALSE = MINIMAL: NO account exclusion,
+// because these techniques run in admin/SYSTEM context by design. Do not
+// "helpfully" flip it to true. (For an admin-ONLY variant, add a positive
+// `| where InitiatingProcessAccountName has_any ("adm_", "administrator", ...)` after the call.)
+FilteredProcessEvents(false)   // excludeAdmin = false (MINIMAL — keeps every account)
 | where
     (1 == 2)   // inert seed — every detection below starts with `or`, so any line toggles freely
     // --- Credential access ---

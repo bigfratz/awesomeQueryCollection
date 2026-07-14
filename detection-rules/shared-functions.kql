@@ -1,0 +1,59 @@
+// ============================================================
+// SHARED FUNCTIONS — single source of truth for the suite's exclusions.
+//
+// Replaces the copy-pasted "=== GLOBAL/MINIMAL EXCLUSIONS vN ===" header that
+// used to live inline in every rule. Define these ONCE as saved functions in
+// your workspace; every rule then calls them, so the device prefix, service-
+// account list, and noise filters are edited in exactly one place.
+//
+// The GLOBAL vs MINIMAL split collapses into one boolean parameter:
+//   excludeAdmin = true   -> GLOBAL  (T1-T3: drop admin/SYSTEM/service noise)
+//   excludeAdmin = false  -> MINIMAL (T4 privileged-context: keep every account,
+//                                      because those techniques run elevated)
+// When excludeAdmin is false, the `excludeAdmin and ...` term is always false,
+// so `not(false)` keeps the row — i.e. the account filter switches itself off.
+//
+// ------------------------------------------------------------
+// BEFORE DEPLOYING — set these in ONE place (here), not per-rule:
+//   1. DeviceName prefix ("X")
+//   2. the service-account placeholders (<svc_account_1>, <svc_account_2>)
+//   3. the parent/command-line noise filters (the "x" placeholders) and, if you
+//      use it, the commented Visual Studio folder exclusion.
+//
+// HOW TO SAVE (pick your platform):
+//   * Microsoft Sentinel / Log Analytics: paste each function BODY (the part in
+//     braces), "Save as function", set the Function alias to the name below and
+//     declare the parameter (excludeAdmin, Type: bool, Default: true).
+//   * Defender XDR advanced hunting / ADX: use the control command form, e.g.
+//       .create-or-alter function FilteredProcessEvents(excludeAdmin: bool = true) { <body> }
+//
+// The `let` form below is also directly usable: paste it at the top of any
+// single query to test a rule standalone before the saved functions exist.
+// NOTE: once converted, the rule files DEPEND on these being deployed first.
+// ============================================================
+
+
+// FilteredProcessEvents(excludeAdmin) — DeviceProcessEvents with the shared
+// exclusions applied. Deployed T1-T3 call it with true; T4 with false.
+let FilteredProcessEvents = (excludeAdmin: bool = true) {
+    DeviceProcessEvents
+    | where DeviceName startswith "X"
+    | where isnotempty(InitiatingProcessAccountName)
+    | where not(excludeAdmin and InitiatingProcessAccountName has_any ("adm_", "administrator", "system", "lokaler dienst", "defaultuser0", "<svc_account_1>", "<svc_account_2>"))
+    //| where not(InitiatingProcessFolderPath has_any ("C:\\Program Files (x86)\\Microsoft Visual Studio", "C:\\Program Files\\Microsoft Visual Studio\\2022\\Professional\\"))
+    | where not(InitiatingProcessParentFileName == "x" and (InitiatingProcessCommandLine contains "x" and InitiatingProcessCommandLine contains "x"))
+    | where not(ProcessCommandLine matches regex @"x")
+};
+
+
+// FilteredDeviceEvents(excludeAdmin) — the DeviceEvents sibling, for rules that
+// read that table instead (e.g. the tool-agnostic LSASS-dump rule keying on
+// OpenProcessApiCall). Same exclusions MINUS the ProcessCommandLine regex,
+// because DeviceEvents has no ProcessCommandLine column.
+let FilteredDeviceEvents = (excludeAdmin: bool = true) {
+    DeviceEvents
+    | where DeviceName startswith "X"
+    | where isnotempty(InitiatingProcessAccountName)
+    | where not(excludeAdmin and InitiatingProcessAccountName has_any ("adm_", "administrator", "system", "lokaler dienst", "defaultuser0", "<svc_account_1>", "<svc_account_2>"))
+    | where not(InitiatingProcessParentFileName == "x" and (InitiatingProcessCommandLine contains "x" and InitiatingProcessCommandLine contains "x"))
+};
