@@ -11,6 +11,7 @@ legitimately. All rules live in this one folder, prefixed by tier (`t1-` … `t4
 
 | File | Purpose | Automation action |
 |------|---------|-------------------|
+| `shared-functions.kql` | **Deploy first.** Saved functions holding the suite's exclusions in one place: `FilteredProcessEvents(excludeAdmin)` and its `FilteredDeviceEvents` sibling. Every tiered rule calls these. | None — infrastructure |
 | `t1-lolbas-signals-watch.kql` | **Deploy.** Discovery/context + unusual tooling — lowest-confidence signals. | Watch (enrichment/ticketing) |
 | `t2-lolbas-suspicious-review.kql` | **Deploy.** Dual-use techniques + light persistence; needs a second signal to escalate. | Review (analyst) |
 | `t3-lolbas-malicious-respond.kql` | **Deploy.** Execution / evasion / initial-access chains; rare or no benign explanation. | Respond (aggressive) |
@@ -50,9 +51,13 @@ it is not scoped admin-only.
 Scoped to the first few ATT&CK stages (recon / initial access / execution /
 light persistence). Conventions shared across all three:
 
-- **Identical global exclusion header**, marked `// === GLOBAL EXCLUSIONS v1 ===`.
-  Bump the version number when you change it and keep all three in sync (or move
-  the list to a Sentinel Watchlist to avoid duplication).
+- **Shared exclusions via a saved function** — every rule opens with
+  `FilteredProcessEvents(true)` instead of a copy-pasted exclusion header, so the
+  device prefix, service-account list, and noise filters live in exactly one
+  place (`shared-functions.kql`). The T4 tier passes `false` (MINIMAL — keeps
+  every account, because those techniques run elevated). The DeviceEvents-based
+  rules use the `FilteredDeviceEvents` sibling. **Deploy `shared-functions.kql`
+  first** — the rules depend on those functions existing in the workspace.
 - **Always-false seed** (`(1 == 2)`) so every detection line starts with `or`
   and can be toggled/removed without breaking the OR chain.
 - **No cross-tier overlap** — each command lives in exactly one rule (e.g.
@@ -62,8 +67,11 @@ light persistence). Conventions shared across all three:
   behaviour files organise by MITRE tactic / rule block instead.)
 
 ### Before deploying
-1. Set the `<svc_account_n>` account placeholders in the header (all three) and
-   the interpreter FP list (`has_any ("x")`) in the T2 rule.
+0. Deploy `shared-functions.kql` first (save `FilteredProcessEvents` /
+   `FilteredDeviceEvents` as workspace functions), and set the device prefix,
+   `<svc_account_n>` placeholders, and noise filters **there** — one place,
+   applies to every rule.
+1. Set the interpreter FP list (`has_any ("x")`) in the T2 rule.
 2. Confirm `wevtutil qe` matches your telemetry's term form.
 3. Sanity-check the `FileName in~` matches for curl/wget and the interpreters
    against a sample window.

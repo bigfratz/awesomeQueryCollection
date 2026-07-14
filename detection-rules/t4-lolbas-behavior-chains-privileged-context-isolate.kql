@@ -36,18 +36,8 @@
 // incident (it carries the most context) with static hits as enrichment.
 // ============================================================
 let lookback = 1d;   // trim to just above rule frequency when deploying
-DeviceProcessEvents
+FilteredProcessEvents(false)   // excludeAdmin = false (MINIMAL — keeps every account); see shared-functions.kql
 | where Timestamp > ago(lookback)
-// === MINIMAL EXCLUSIONS v1 — NO account exclusion (intentional) ===
-| where DeviceName startswith "X"   // scope to your STAGING device prefix first
-// NOTE: deliberately no InitiatingProcessAccountName exclusion here — admin/SYSTEM
-// context is exactly where these techniques fire. Do not "helpfully" re-add it.
-| where isnotempty(InitiatingProcessAccountName)
-//| where not(InitiatingProcessFolderPath has_any ("C:\\Program Files (x86)\\Microsoft Visual Studio",
-//    "C:\\Program Files\\Microsoft Visual Studio\\2022\\Professional\\"))
-| where not(InitiatingProcessParentFileName == "x" and (InitiatingProcessCommandLine contains "x" and InitiatingProcessCommandLine contains "x"))
-| where not(ProcessCommandLine matches regex @"x")
-// === END MINIMAL EXCLUSIONS v1 ===
 | extend AntiRecoveryAction = case(
     ProcessCommandLine has "vssadmin.exe" and ProcessCommandLine has "delete" and ProcessCommandLine has "shadows", "T1490 shadow-copy deletion (vssadmin)",
     ProcessCommandLine has "wmic.exe" and ProcessCommandLine has "shadowcopy" and ProcessCommandLine has "delete", "T1490 shadow-copy deletion (wmic)",
@@ -83,13 +73,8 @@ DeviceProcessEvents
 // both isolate, attribution-only; decide the owner before go-live.
 // ============================================================
 let lookback = 1d;
-DeviceEvents
+FilteredDeviceEvents(false)   // DeviceEvents sibling, excludeAdmin = false (MINIMAL); see shared-functions.kql
 | where Timestamp > ago(lookback)
-// === MINIMAL EXCLUSIONS v1 — NO account exclusion (intentional) ===
-| where DeviceName startswith "X"   // scope to your STAGING device prefix first
-| where isnotempty(InitiatingProcessAccountName)
-| where not(InitiatingProcessParentFileName == "x" and (InitiatingProcessCommandLine contains "x" and InitiatingProcessCommandLine contains "x"))
-// === END MINIMAL EXCLUSIONS v1 ===
 | where ActionType == "OpenProcessApiCall"
 | where FileName =~ "lsass.exe"   // target of the opened handle
 | where not(InitiatingProcessFileName in~ ("werfault.exe", "werfaultsecure.exe", "wermgr.exe", "<diag_agent_1>"))
@@ -129,14 +114,8 @@ DeviceEvents
 // attribution-only, chain rule should own (it names the target set).
 // ============================================================
 let lookback = 1d;
-DeviceProcessEvents
+FilteredProcessEvents(false)   // excludeAdmin = false (MINIMAL — keeps every account); see shared-functions.kql
 | where Timestamp > ago(lookback)
-// === MINIMAL EXCLUSIONS v1 — NO account exclusion (intentional) ===
-| where DeviceName startswith "X"   // scope to your STAGING device prefix first
-| where isnotempty(InitiatingProcessAccountName)
-| where not(InitiatingProcessParentFileName == "x" and (InitiatingProcessCommandLine contains "x" and InitiatingProcessCommandLine contains "x"))
-| where not(ProcessCommandLine matches regex @"x")
-// === END MINIMAL EXCLUSIONS v1 ===
 | where
     (1 == 2)   // inert seed — every detection below starts with `or`, so any line toggles freely
     or (ProcessCommandLine has_any ("psexec.exe", "psexec64.exe", "paexec.exe") and ProcessCommandLine has "\\\\")
@@ -182,14 +161,8 @@ DeviceProcessEvents
 // incident (it carries the full technique set) with static hits as enrichment.
 // ============================================================
 let lookback = 1d;   // trim to just above rule frequency when deploying
-DeviceProcessEvents
+FilteredProcessEvents(false)   // excludeAdmin = false (MINIMAL — keeps every account); see shared-functions.kql
 | where Timestamp > ago(lookback)
-// === MINIMAL EXCLUSIONS v1 — NO account exclusion (intentional) ===
-| where DeviceName startswith "X"   // scope to your STAGING device prefix first
-| where isnotempty(InitiatingProcessAccountName)
-| where not(InitiatingProcessParentFileName == "x" and (InitiatingProcessCommandLine contains "x" and InitiatingProcessCommandLine contains "x"))
-| where not(ProcessCommandLine matches regex @"x")
-// === END MINIMAL EXCLUSIONS v1 ===
 | extend ImpairmentTechnique = case(
     ProcessCommandLine has "Set-MpPreference" and ProcessCommandLine has_any ("-DisableRealtimeMonitoring", "-DisableBehaviorMonitoring", "-DisableIOAVProtection", "-DisableScriptScanning", "-DisableBlockAtFirstSeen", "-DisableIntrusionPreventionSystem", "-DisableOnAccessProtection", "-MAPSReporting Disabled", "-MAPSReporting 0", "-SubmitSamplesConsent NeverSend", "-SubmitSamplesConsent 2"), "T1562.001 Defender disable (Set-MpPreference)",
     ProcessCommandLine has "MpPreference" and ProcessCommandLine has "Add" and ProcessCommandLine has_any ("ExclusionPath", "ExclusionExtension", "ExclusionProcess"), "T1562.001 Defender exclusion (WMIC)",

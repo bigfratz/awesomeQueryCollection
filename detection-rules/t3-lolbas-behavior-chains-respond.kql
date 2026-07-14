@@ -19,9 +19,9 @@
 // custom detections require — re-join arg_max(Timestamp, ReportId) per group
 // if you deploy them as MDE CDs. Deploy each block as its OWN analytics rule.
 //
-// All blocks carry the identical GLOBAL EXCLUSIONS header (same as T1-T3
-// static) — behavior rules stay admin-excluded like the rest of the T3 tier;
-// the no-account-exclusion variants belong in T4.
+// All blocks call FilteredProcessEvents(true) (shared-functions.kql) — behavior
+// rules stay admin-excluded (GLOBAL) like the rest of the T3 tier; the
+// no-account-exclusion variants belong in T4.
 
 
 // ============================================================
@@ -39,17 +39,8 @@
 // ============================================================
 let lookback = 1d;   // trim to just above rule frequency when deploying
 let payload_exts = dynamic(["exe", "dll", "ps1", "vbs", "js", "jse", "hta", "bat", "cmd", "scr", "msi", "wsf"]);
-DeviceProcessEvents
+FilteredProcessEvents(true)   // excludeAdmin = true (GLOBAL); see shared-functions.kql
 | where Timestamp > ago(lookback)
-// === GLOBAL EXCLUSIONS v1 — keep identical across all LOLBAS rules ===
-| where DeviceName startswith "X"
-| where not(InitiatingProcessAccountName has_any ("adm_", "administrator", "system", "lokaler dienst", "defaultuser0", "<svc_account_1>", "<svc_account_2>"))
-| where isnotempty(InitiatingProcessAccountName)
-//| where not(InitiatingProcessFolderPath has_any ("C:\\Program Files (x86)\\Microsoft Visual Studio",
-//    "C:\\Program Files\\Microsoft Visual Studio\\2022\\Professional\\"))
-| where not(InitiatingProcessParentFileName == "x" and (InitiatingProcessCommandLine contains "x" and InitiatingProcessCommandLine contains "x"))
-| where not(ProcessCommandLine matches regex @"x")
-// === END GLOBAL EXCLUSIONS v1 ===
 | where FileName in~ ("certutil.exe", "bitsadmin.exe", "mshta.exe", "curl.exe", "wget.exe")
     // powershell only with cradle verbs — bare powershell + network + file write is BAU
     or (FileName in~ ("powershell.exe", "pwsh.exe")
@@ -98,17 +89,8 @@ DeviceProcessEvents
 // self-join) if boundary misses show up in validation.
 // ============================================================
 let lookback = 1d;
-DeviceProcessEvents
+FilteredProcessEvents(true)   // excludeAdmin = true (GLOBAL); see shared-functions.kql
 | where Timestamp > ago(lookback)
-// === GLOBAL EXCLUSIONS v1 — keep identical across all LOLBAS rules ===
-| where DeviceName startswith "X"
-| where not(InitiatingProcessAccountName has_any ("adm_", "administrator", "system", "lokaler dienst", "defaultuser0", "<svc_account_1>", "<svc_account_2>"))
-| where isnotempty(InitiatingProcessAccountName)
-//| where not(InitiatingProcessFolderPath has_any ("C:\\Program Files (x86)\\Microsoft Visual Studio",
-//    "C:\\Program Files\\Microsoft Visual Studio\\2022\\Professional\\"))
-| where not(InitiatingProcessParentFileName == "x" and (InitiatingProcessCommandLine contains "x" and InitiatingProcessCommandLine contains "x"))
-| where not(ProcessCommandLine matches regex @"x")
-// === END GLOBAL EXCLUSIONS v1 ===
 | extend DiscoveryTechnique = case(
     ProcessCommandLine has "whoami.exe" and ProcessCommandLine has_any ("/priv", "/groups"), "T1033 token/privilege enum",
     ProcessCommandLine has_any ("qwinsta.exe", "query.exe") and ProcessCommandLine has "user", "T1033 session enum",
@@ -148,16 +130,7 @@ DeviceProcessEvents
 // ============================================================
 let user_writable = dynamic(["\\appdata\\", "\\users\\public\\", "\\downloads\\", "\\windows\\temp\\", "%appdata%", "%localappdata%", "%temp%", "%public%"]);
 let script_payloads = dynamic(["powershell", "pwsh", "mshta", "wscript", "cscript", "regsvr32", "rundll32", "cmd /c", "cmd.exe /c"]);
-DeviceProcessEvents
-// === GLOBAL EXCLUSIONS v1 — keep identical across all LOLBAS rules ===
-| where DeviceName startswith "X"
-| where not(InitiatingProcessAccountName has_any ("adm_", "administrator", "system", "lokaler dienst", "defaultuser0", "<svc_account_1>", "<svc_account_2>"))
-| where isnotempty(InitiatingProcessAccountName)
-//| where not(InitiatingProcessFolderPath has_any ("C:\\Program Files (x86)\\Microsoft Visual Studio",
-//    "C:\\Program Files\\Microsoft Visual Studio\\2022\\Professional\\"))
-| where not(InitiatingProcessParentFileName == "x" and (InitiatingProcessCommandLine contains "x" and InitiatingProcessCommandLine contains "x"))
-| where not(ProcessCommandLine matches regex @"x")
-// === END GLOBAL EXCLUSIONS v1 ===
+FilteredProcessEvents(true)   // excludeAdmin = true (GLOBAL); see shared-functions.kql
 | where
     (1 == 2)   // inert seed — every detection below starts with `or`, so any line toggles freely
     // schtasks /create escalated: SYSTEM run-as, user-writable target, or interpreter payload.

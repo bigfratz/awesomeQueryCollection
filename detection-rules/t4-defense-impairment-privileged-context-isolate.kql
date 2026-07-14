@@ -35,17 +35,10 @@
 //   - wevtutil cl (event-log clear) already lives in T3/T4 — not re-added here.
 //     It IS one of the constituent techniques in the burst behaviour rule
 //     (t4-...-behavior-chains), which is by design (chains reuse owned commands).
-DeviceProcessEvents
-// === MINIMAL EXCLUSIONS v1 — NO account exclusion (intentional) ===
-| where DeviceName startswith "X"   // scope to your STAGING device prefix first
-// NOTE: deliberately no InitiatingProcessAccountName exclusion here — admin/SYSTEM
-// context is exactly where these techniques fire. Do not "helpfully" re-add it.
-| where isnotempty(InitiatingProcessAccountName)
-//| where not(InitiatingProcessFolderPath has_any ("C:\\Program Files (x86)\\Microsoft Visual Studio",
-//    "C:\\Program Files\\Microsoft Visual Studio\\2022\\Professional\\"))
-| where not(InitiatingProcessParentFileName == "x" and (InitiatingProcessCommandLine contains "x" and InitiatingProcessCommandLine contains "x"))
-| where not(ProcessCommandLine matches regex @"x")
-// === END MINIMAL EXCLUSIONS v1 ===
+// Shared exclusions via the saved function FilteredProcessEvents (see
+// shared-functions.kql). excludeAdmin = FALSE = MINIMAL: NO account exclusion —
+// these run in admin/SYSTEM context by design.
+FilteredProcessEvents(false)   // excludeAdmin = false (MINIMAL — keeps every account)
 | where
     (1 == 2)   // inert seed — every detection below starts with `or`, so any line toggles freely
     // --- Defender tampering via command line (T1562.001) ---
