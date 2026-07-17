@@ -57,3 +57,32 @@ let FilteredDeviceEvents = (excludeAdmin: bool = true) {
     | where not(excludeAdmin and InitiatingProcessAccountName has_any ("adm_", "administrator", "system", "lokaler dienst", "defaultuser0", "<svc_account_1>", "<svc_account_2>"))
     | where not(InitiatingProcessParentFileName == "x" and (InitiatingProcessCommandLine contains "x" and InitiatingProcessCommandLine contains "x"))
 };
+
+
+// FilteredNetworkEvents(excludeAdmin) — DeviceNetworkEvents sibling, for the
+// standalone network-behavior rules (dead-drop C2, beaconing). Same shape as
+// FilteredDeviceEvents: no ProcessCommandLine column on this table, so it drops
+// the ProcessCommandLine regex. NOTE: this is for rules that START from the
+// network table; behavior rules that ANCHOR on a filtered process leg and JOIN
+// raw DeviceNetworkEvents by DeviceId (e.g. the download-chain rule) should keep
+// using the raw table — the process leg already carries the exclusions.
+let FilteredNetworkEvents = (excludeAdmin: bool = true) {
+    DeviceNetworkEvents
+    | where DeviceName startswith "X"
+    | where isnotempty(InitiatingProcessAccountName)
+    | where not(excludeAdmin and InitiatingProcessAccountName has_any ("adm_", "administrator", "system", "lokaler dienst", "defaultuser0", "<svc_account_1>", "<svc_account_2>"))
+    | where not(InitiatingProcessParentFileName == "x" and (InitiatingProcessCommandLine contains "x" and InitiatingProcessCommandLine contains "x"))
+};
+
+
+// FilteredFileEvents(excludeAdmin) — DeviceFileEvents sibling, for the standalone
+// file-behavior rules (collection staging fan-out, and the archive leg of the
+// collection->exfil bridge). Same shape as FilteredDeviceEvents (no
+// ProcessCommandLine column on this table).
+let FilteredFileEvents = (excludeAdmin: bool = true) {
+    DeviceFileEvents
+    | where DeviceName startswith "X"
+    | where isnotempty(InitiatingProcessAccountName)
+    | where not(excludeAdmin and InitiatingProcessAccountName has_any ("adm_", "administrator", "system", "lokaler dienst", "defaultuser0", "<svc_account_1>", "<svc_account_2>"))
+    | where not(InitiatingProcessParentFileName == "x" and (InitiatingProcessCommandLine contains "x" and InitiatingProcessCommandLine contains "x"))
+};

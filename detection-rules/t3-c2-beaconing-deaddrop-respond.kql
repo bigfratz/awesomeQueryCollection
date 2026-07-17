@@ -1,0 +1,138 @@
+// File: t3-c2-beaconing-deaddrop-respond.kql   [STAGING]
+//
+// Tactic: COMMAND & CONTROL (TA0011). Second of the three later-stage tactic
+// files (collect -> C2 -> exfiltrate). See t3-collection-staging-respond.kql
+// and t3-exfiltration-egress-respond.kql.
+//
+// NAMING: no `LOLBAS` segment (spans tunnelers + pure-network behavior), T3
+// (respond). Three blocks, each its OWN analytics rule:
+//   Block 1 (static)   — tunneling / reverse-proxy TOOLS on the command line.
+//   Block 2 (behavior) — dead-drop C2: a NON-browser process talking to a
+//                        legitimate web service used as a C2 relay (T1102).
+//   Block 3 (behavior) — beaconing: low-jitter, regular-interval callbacks to
+//                        one external peer (T1071 / T1571).
+//
+// WHY OVERLOOKED: the two biggest Defender C2 blind spots are (a) web-service
+// dead drops — raw.githubusercontent / pastebin / api.telegram / Discord
+// webhooks are ALLOWLISTED domains, so destination reputation says nothing;
+// the tell is a script host / LOLBin (not a browser) reaching them — and (b)
+// beaconing regularity, which needs statistics over DeviceNetworkEvents that no
+// single-event rule can express. Both are behavior blocks below.
+//
+// NOTE ON netsh portproxy: the `netsh interface portproxy add` LOLBIN tunnel
+// (T1090) is already owned by t3-lolbas-malicious-respond.kql — NOT duplicated
+// here (single-command ownership, per the README). This file adds the
+// third-party tunnelers and the network-behavior angles that rule can't see.
+//
+// The behavior blocks read DeviceNetworkEvents via the shared
+// FilteredNetworkEvents(true) function (shared-functions.kql) — same GLOBAL
+// device prefix / account exclusion as the rest of T3, edited in one place.
+
+
+// ============================================================
+// Rule: T3-C2-tunneler-respond   (static — reverse-proxy / tunneling tools)
+// Third-party tunnelers used to expose an internal host or pivot outbound
+// (T1090 / T1572). These binaries have essentially no first-party enterprise
+// use on a normal endpoint; presence + the tunnel verb is the signal.
+// ============================================================
+FilteredProcessEvents(true)   // excludeAdmin = true (GLOBAL); see shared-functions.kql
+| where
+    (1 == 2)   // inert seed — every detection below starts with `or`, so any line toggles freely
+    // Named tunnelers / reverse proxies (T1572). ngrok, Cloudflare Tunnel, frp,
+    // chisel — pure pivot/tunnel tooling. Match on image name.
+    or (FileName in~ ("ngrok.exe", "cloudflared.exe", "frpc.exe", "frps.exe", "chisel.exe", "gost.exe", "nps.exe"))
+    // OpenSSH / PuTTY plink building a reverse (-R), dynamic SOCKS (-D) or local
+    // (-L) forward (T1572). ssh.exe ships in-box now, so key on the tunnel switch,
+    // not the binary. A bare interactive `ssh host` (no forward flag) does not fire.
+    or (FileName in~ ("ssh.exe", "plink.exe") and ProcessCommandLine matches regex @"(?i)\s-[RDL]\s")
+    // Windows-native SSH dynamic/remote forward spelled long-form.
+    or (FileName in~ ("ssh.exe", "plink.exe") and ProcessCommandLine has_any ("-o proxycommand", "streamlocal"))
+| extend Severity = "High"
+| order by Timestamp desc
+
+
+// ============================================================
+// Rule: T3-C2-deaddrop-webservice-respond   (behavior — T1102)
+// A NON-browser process connecting to a legitimate web service commonly abused
+// as a C2 relay / dead drop. Destination reputation is useless here (these are
+// allowlisted) — the InitiatingProcess is the discriminator: browsers, Office,
+// and known updaters talk to these all day; powershell / curl / mshta / a
+// random .tmp binary doing so is the tell.
+// Tuning: browsers/updaters are excluded below — extend the allow-list with any
+// legit CLI in your estate (e.g. gh.exe -> api.github.com, a CI agent). Scope
+// the domain list to what your business does NOT use natively.
+// Reads DeviceNetworkEvents via FilteredNetworkEvents(true) (shared-functions.kql).
+// ============================================================
+let lookback = 1d;
+// Hostnames only — MDE RemoteUrl is frequently just the host, so path-scoped
+// forms (…/api/webhooks) won't match reliably. The non-browser initiator filter
+// below carries the discrimination (a non-browser hitting discord/telegram at all
+// is the tell), so per-host granularity isn't needed.
+let deaddrop_hosts = dynamic([
+    "raw.githubusercontent.com", "gist.githubusercontent.com", "pastebin.com", "hastebin.com",
+    "paste.ee", "api.telegram.org", "discord.com", "discordapp.com", "cdn.discordapp.com",
+    "api.dropboxapi.com", "content.dropboxapi.com", "api.trello.com",
+    "transfer.sh", "0x0.st", "file.io", "anonfiles.com", "gofile.io", "webhook.site",
+    "ngrok.io", "trycloudflare.com", "pages.dev", "workers.dev"]);
+// Processes legitimately allowed to reach cloud/web services — tune to your estate.
+let allowed_initiators = dynamic([
+    "chrome.exe", "msedge.exe", "firefox.exe", "iexplore.exe", "opera.exe", "brave.exe",
+    "msedgewebview2.exe", "outlook.exe", "teams.exe", "onedrive.exe", "code.exe",
+    "acrobat.exe", "acrord32.exe", "slack.exe", "githubdesktop.exe"]);
+FilteredNetworkEvents(true)   // excludeAdmin = true (GLOBAL); see shared-functions.kql
+| where Timestamp > ago(lookback)
+| where ActionType in ("ConnectionSuccess", "ConnectionAttempted")
+| where isnotempty(RemoteUrl) and RemoteUrl has_any (deaddrop_hosts)
+| where not(InitiatingProcessFileName in~ (allowed_initiators))
+| project Timestamp, DeviceId, DeviceName, InitiatingProcessAccountName,
+    InitiatingProcessFileName, InitiatingProcessId, InitiatingProcessCommandLine,
+    RemoteUrl, RemoteIP, RemotePort
+| extend Severity = "High"
+| order by Timestamp desc
+
+
+// ============================================================
+// Rule: T3-C2-beaconing-respond   (behavior — T1071 / T1571)
+// Regular-interval callbacks to a single external peer with LOW jitter — the
+// beacon shape. Groups connections by (device, process, remote IP), computes
+// the coefficient of variation (stdev/avg) of the inter-arrival gaps, and fires
+// when the cadence is tight and repeated. A human/browser is bursty and
+// irregular (high CoV); an automated beacon is metronomic (low CoV).
+// This is the statistical detection no single-event rule can express, and the
+// C2 gap Defender's OOTB analytics are weakest on.
+// Tuning knobs (all staging starts):
+//   MinConns 12        — need enough intervals for stdev to mean something.
+//   AvgGap 30s..2h     — the beacon interval band; below 30s is chatty app noise.
+//   CoV < 0.20         — jitter tolerance; raise toward 0.35 to catch jittered
+//                        beacons, lower to cut FPs. Validate against your
+//                        telemetry/heartbeat agents (AV, MDM, monitoring) and
+//                        allow-list their InitiatingProcess/RemoteIP first.
+// Window/order: requires serialize for prev(); run as a scheduled rule over a
+// window a few multiples of the largest AvgGap you want to catch.
+// Reads DeviceNetworkEvents via FilteredNetworkEvents(true) (shared-functions.kql).
+// ============================================================
+let lookback = 1d;
+let known_beacon_procs = dynamic([   // legit heartbeat agents — allow-list to taste
+    "msmpeng.exe", "sensendr.exe", "mssense.exe", "healthservice.exe", "microsoftedgeupdate.exe"]);
+FilteredNetworkEvents(true)   // excludeAdmin = true (GLOBAL); see shared-functions.kql
+| where Timestamp > ago(lookback)
+| where ActionType in ("ConnectionSuccess", "ConnectionAttempted")
+| where isnotempty(RemoteIP) and not(ipv4_is_private(RemoteIP))    // external peers only
+| where not(InitiatingProcessFileName in~ (known_beacon_procs))
+| order by DeviceId asc, InitiatingProcessId asc, RemoteIP asc, Timestamp asc
+| serialize
+| extend PrevTs = prev(Timestamp),
+    SamePeer = (DeviceId == prev(DeviceId) and InitiatingProcessId == prev(InitiatingProcessId) and RemoteIP == prev(RemoteIP))
+| where SamePeer
+| extend GapSec = datetime_diff('second', Timestamp, PrevTs)
+| where GapSec > 0
+| summarize Conns = count(), AvgGap = avg(GapSec), StdevGap = stdev(GapSec),
+    Ports = make_set(RemotePort, 10), SampleUrls = make_set(RemoteUrl, 10),
+    FirstSeen = min(Timestamp), LastSeen = max(Timestamp)
+    by DeviceId, DeviceName, InitiatingProcessAccountName, InitiatingProcessFileName, RemoteIP
+| where Conns >= 12 and AvgGap between (30.0 .. 7200.0) and (StdevGap / AvgGap) < 0.20
+| extend CoV = round(StdevGap / AvgGap, 3)
+| project DeviceId, DeviceName, InitiatingProcessAccountName, InitiatingProcessFileName,
+    RemoteIP, Conns, AvgGap, CoV, Ports, SampleUrls, FirstSeen, LastSeen
+| extend Severity = "High"
+| order by CoV asc, Conns desc
