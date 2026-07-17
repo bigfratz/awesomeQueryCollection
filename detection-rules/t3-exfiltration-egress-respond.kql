@@ -1,0 +1,125 @@
+// File: t3-exfiltration-egress-respond.kql   [STAGING]
+//
+// Tactic: EXFILTRATION (TA0010). Third of the three later-stage tactic files
+// (collect -> C2 -> exfiltrate). See t3-collection-staging-respond.kql and
+// t3-c2-beaconing-deaddrop-respond.kql.
+//
+// NAMING: no `LOLBAS` segment (cloud CLIs + native upload verbs), T3 (respond).
+// Two blocks, each its OWN analytics rule:
+//   Block 1 (static)   — EGRESS verbs: cloud-storage CLIs, upload switches on
+//                        tools the suite already watches for download, legacy
+//                        file-transfer protocols, and email-with-attachment.
+//   Block 2 (behavior) — collection -> exfil bridge: an archive is written, then
+//                        an egress tool runs on the same host inside a window
+//                        (T1560 -> T1567). The highest-confidence, lowest-FP shape.
+//
+// WHY OVERLOOKED: the suite (and Defender's OOTB set) is INGRESS-biased — it
+// watches `bitsadmin transfer|download`, `curl -o`, download cradles. The
+// mirror-image egress verbs are uncovered: `bitsadmin /upload`, `curl -T`,
+// WebClient.UploadFile, and above all `rclone` — a signed, "legit" binary that
+// is the modern exfil workhorse. Reputation/allowlisting hides all of these.
+//
+// LIMITATION — no byte volume on the endpoint: MDE `DeviceNetworkEvents` carries
+// NO sent/received byte counts, so a true "N MB out in 5 min" threshold is not
+// expressible from endpoint telemetry — that needs firewall/proxy/NetFlow logs.
+// Block 2 therefore uses the archive->egress-tool SEQUENCE as the tractable
+// endpoint proxy for bulk exfil; wire a volume rule on your egress proxy logs
+// as the complement.
+//
+// Block 1 uses FilteredProcessEvents (shared-functions.kql). Block 2 joins
+// DeviceFileEvents + DeviceProcessEvents; the file leg inlines the device prefix
+// + account exclusion (no FilteredFileEvents sibling yet).
+
+
+// ============================================================
+// Rule: T3-Exfiltration-egress-respond   (static — egress verbs)
+// ============================================================
+FilteredProcessEvents(true)   // excludeAdmin = true (GLOBAL); see shared-functions.kql
+| where
+    (1 == 2)   // inert seed — every detection below starts with `or`, so any line toggles freely
+    // aws s3 cp/sync/mv — CLI push to attacker-controlled S3 (T1567.002). Match the
+    // s3 sub-service + a copy verb so `aws sts get-caller-identity` etc. don't fire.
+    or (ProcessCommandLine has "aws" and ProcessCommandLine has "s3" and ProcessCommandLine has_any ("cp", "sync", "mv"))
+    // azcopy copy — Azure Blob push (T1567.002).
+    or (FileName =~ "azcopy.exe" and ProcessCommandLine has "copy")
+    // bitsadmin /upload — the EGRESS twin of the transfer|download line T3-malicious
+    // owns (T1048 / T1567). BITS upload jobs are a stealthy, resumable exfil path.
+    or (ProcessCommandLine has "bitsadmin.exe" and ProcessCommandLine has "upload")
+    // curl UPLOAD switches (T1041 / T1048): -T/--upload-file (PUT a file) and
+    // --data-binary @file (POST a file body). Mirrors the T2 `curl -d` review line
+    // but scoped to whole-FILE upload, which is exfil, not an API ping.
+    or (FileName in~ ("curl.exe") and ProcessCommandLine has_any ("--upload-file", "--data-binary"))
+    // Legacy file-transfer clients scripted for exfil (T1048): ftp -s:script,
+    // tftp put. Rare on modern endpoints outside legacy line-of-business jobs.
+    or (FileName =~ "ftp.exe" and ProcessCommandLine has "-s:")
+    or (FileName =~ "tftp.exe" and ProcessCommandLine has_any ("put", "-i"))
+    // gsutil / gcloud storage cp — Google Cloud Storage push (T1567.002).
+    or (ProcessCommandLine has_any ("gsutil", "gcloud storage") and ProcessCommandLine has_any ("cp", "rsync"))
+    // MEGA CLI clients (T1567.002) — MEGAcmd / MEGAsync headless upload.
+    or (FileName in~ ("mega.exe", "megacmd.exe", "megaclient.exe", "megasync.exe"))
+    // net use to a WebDAV / DavWWWRoot share, incl. the @SSL form — copy-out over
+    // WebDAV (T1048) bypasses SMB egress controls by riding HTTPS.
+    or (ProcessCommandLine has "net.exe" and ProcessCommandLine has "use"
+        and ProcessCommandLine has_any ("@ssl", "davwwwroot"))
+    // PowerShell egress cmdlets (T1041): WebClient.UploadFile/UploadData, or
+    // Invoke-RestMethod/Invoke-WebRequest POSTing a file via -InFile. `-Method Post`
+    // alone is too common — pair it with -InFile so only file-body sends fire.
+    or (ProcessCommandLine has_any ("powershell.exe", "pwsh.exe")
+        and (ProcessCommandLine has_any ("uploadfile", "uploaddata", "uploadstring")
+            or (ProcessCommandLine has_any ("invoke-restmethod", "invoke-webrequest") and ProcessCommandLine has "-infile")))
+    // rclone — the modern exfil workhorse (T1567.002). Signed and "legit", so name
+    // alone is allowlisted; the copy/sync/move/mount verb to a remote is the tell.
+    or (FileName =~ "rclone.exe" and ProcessCommandLine has_any ("copy", "sync", "move", "mount", "rcat"))
+    // Send-MailMessage with an attachment — email exfil / self-send (T1048.003 / T1114).
+    or (ProcessCommandLine has "send-mailmessage" and ProcessCommandLine has_any ("-attachment", "-attachments"))
+| extend Severity = "High"
+| order by Timestamp desc
+
+
+// ============================================================
+// Rule: T3-Exfiltration-collect-then-egress-respond   (behavior — T1560 -> T1567)
+// The collection->exfil BRIDGE: an archive file is created on a host, then an
+// egress tool runs on that SAME host within the window. Each leg is only
+// suggestive alone (archiving is common; a cloud CLI can be legit) — the
+// ordered pair "package, then push" inside minutes is the exfil signature and
+// buys the respond action. Pairs with t3-collection-staging-respond.kql (which
+// catches the packaging) by confirming the follow-through.
+// Tuning: window 30m and the egress-tool list are staging starts. If backup/
+// sync jobs (which archive then upload legitimately) hit it, exclude them by
+// InitiatingProcessCommandLine, not by removing the tool.
+// File leg inlines the GLOBAL device prefix + account exclusion (no
+// FilteredFileEvents sibling yet); process leg uses FilteredProcessEvents.
+// ============================================================
+let lookback = 1d;
+let window = 30m;
+let archive_exts = dynamic(["zip", "rar", "7z", "cab", "tar", "gz", "tgz", "arj"]);
+let egress_images = dynamic(["rclone.exe", "mega.exe", "megacmd.exe", "megasync.exe", "azcopy.exe",
+    "curl.exe", "ftp.exe", "tftp.exe", "winscp.exe", "pscp.exe"]);
+let egress_cmd_markers = dynamic(["rclone", "aws s3", "gsutil", "gcloud storage", "azcopy",
+    "bitsadmin", "uploadfile", "uploaddata", "invoke-restmethod", "send-mailmessage", "--upload-file"]);
+// Leg A: archive files created.
+let archives_created =
+    DeviceFileEvents
+    | where Timestamp > ago(lookback)
+    | where DeviceName startswith "X"                             // <-- device prefix (same as GLOBAL)
+    | where isnotempty(InitiatingProcessAccountName)
+    | where not(InitiatingProcessAccountName has_any ("adm_", "administrator", "system", "lokaler dienst", "defaultuser0", "<svc_account_1>", "<svc_account_2>"))
+    | where ActionType == "FileCreated"
+    | extend Ext = tolower(tostring(split(FileName, ".")[-1]))
+    | where Ext in (archive_exts)
+    | project ArchiveTime = Timestamp, DeviceId, DeviceName, InitiatingProcessAccountName,
+        ArchiveFile = FileName, ArchivePath = FolderPath;
+// Leg B: an egress tool runs.
+let egress_runs =
+    FilteredProcessEvents(true)
+    | where Timestamp > ago(lookback)
+    | where FileName in~ (egress_images) or ProcessCommandLine has_any (egress_cmd_markers)
+    | project EgressTime = Timestamp, ReportId, DeviceId, EgressImage = FileName,
+        EgressCommand = ProcessCommandLine, EgressPid = ProcessId;
+archives_created
+| join kind=inner egress_runs on DeviceId
+| where EgressTime between (ArchiveTime .. ArchiveTime + window)
+| project ArchiveTime, EgressTime, ReportId, DeviceId, DeviceName, InitiatingProcessAccountName,
+    ArchiveFile, ArchivePath, EgressImage, EgressCommand
+| extend Severity = "High"
+| order by ArchiveTime desc

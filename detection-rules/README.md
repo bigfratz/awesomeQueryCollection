@@ -19,6 +19,9 @@ legitimately. All rules live in this one folder, prefixed by tier (`t1-` … `t4
 | `t4-lolbas-sysinternals-privileged-context-isolate.kql` | **Staging.** Cross-family critical tier (cred-access / impact / lateral movement) spanning LOLBAS, Sysinternals, and DC tooling. MINIMAL header (no admin exclusion). | Isolate (harshest) |
 | `t4-defense-impairment-privileged-context-isolate.kql` | **Staging.** Cross-family defence-impairment tier (T1562) — **not LOLBAS** (see naming note): Defender disable via cmdline, kill/stop named security tooling, IFEO Debugger, IIS-log/WAF disable, WDigest downgrade. MINIMAL header. | Isolate (harshest) |
 | `t4-lolbas-behavior-chains-privileged-context-isolate.kql` | **Staging.** Behavior-based T4: anti-recovery chain, tool-agnostic LSASS dump, lateral-movement fan-out, defence-impairment burst. MINIMAL header. | Isolate (harshest) |
+| `t3-collection-staging-respond.kql` | **Staging.** Later-stage tactic file — **Collection** (TA0009 / T1074.001), **not LOLBAS**: password-protected/document archiving, browser credential-store & PST copy, `Compress-Archive` to staging dirs, clipboard/screen capture (`psr.exe`, `CopyFromScreen`), plus a staging-fan-out behavior block. GLOBAL header. | Respond (aggressive) |
+| `t3-c2-beaconing-deaddrop-respond.kql` | **Staging.** Later-stage tactic file — **Command & Control** (TA0011), **not LOLBAS**: third-party tunnelers (ngrok/cloudflared/frp/chisel, ssh `-R/-D/-L`); behavior blocks for web-service dead-drop C2 (T1102, non-browser initiator) and beaconing (T1071, low inter-arrival jitter). GLOBAL header. | Respond (aggressive) |
+| `t3-exfiltration-egress-respond.kql` | **Staging.** Later-stage tactic file — **Exfiltration** (TA0010), **not LOLBAS**: egress verbs Defender's ingress-biased set misses (`rclone`, `bitsadmin /upload`, `curl -T`, cloud CLIs, WebDAV, `Send-MailMessage`), plus a collection→egress bridge behavior block (T1560→T1567). GLOBAL header. | Respond (aggressive) |
 | `lolbin-hunting.kql` | Analyst-driven hunts (rarity/anomaly + network/file correlation, cmd→script, interpreter payloads). | None — human triage |
 | `lolbin-severity-tiers.kql` | **Reference.** Fuller 4-tier, all-stages catalogue with per-line MITRE rationale. Includes later-stage detections (LSASS dump, hive save, `vssadmin delete shadows`, psexec). | None — reference/backlog |
 
@@ -100,6 +103,50 @@ Conventions specific to behavior rules:
 - Written for Sentinel scheduled rules; the summarize/join blocks drop the
   `Timestamp`/`ReportId`/`DeviceId` triple MDE custom detections require —
   re-join `arg_max(Timestamp, ReportId)` per group for MDE CDs.
+
+## Later-stage tactic files: Collection / C2 / Exfiltration (staging)
+
+Three T3 files extend the suite past recon/execution/persistence into the back
+half of the attack chain, organised **by tactic and roughly by time** (collect →
+command-and-control → exfiltrate) rather than by binary family:
+
+| File | Tactic | Marquee coverage |
+|------|--------|------------------|
+| `t3-collection-staging-respond.kql` | Collection (TA0009) | Password-protected & recursive-document archiving, browser credential-store / PST copy, `Compress-Archive` to staging paths, clipboard & screen capture (`psr.exe`, `CopyFromScreen`); + staging fan-out behavior block. |
+| `t3-c2-beaconing-deaddrop-respond.kql` | Command & Control (TA0011) | Third-party tunnelers (ngrok/cloudflared/frp/chisel, ssh `-R/-D/-L`); + web-service **dead-drop** (T1102, non-browser initiator) and **beaconing** (T1071, low-jitter cadence) behavior blocks. |
+| `t3-exfiltration-egress-respond.kql` | Exfiltration (TA0010) | Egress verbs the ingress-biased tiers miss — `rclone`, `bitsadmin /upload`, `curl -T`, aws/azcopy/gsutil, WebDAV, `Send-MailMessage`; + collection→egress bridge behavior block. |
+
+Why they exist: the deployed T1–T3 tiers and Defender's OOTB analytics are
+**ingress/execution biased**. These target the two things that leaves uncovered —
+**egress verbs on signed, allowlisted tools** (rclone, `bitsadmin /upload`, cloud
+CLIs, dead-drop domains) and **statistical network behavior** (beaconing cadence,
+dead-drop by initiator) that no single-event rule can express.
+
+Conventions and caveats:
+
+- **`LOLBAS` segment dropped** (like `t4-defense-impairment-*`): these classes
+  span native cmdlets, archivers, cloud CLIs, and pure network behavior, so per
+  the naming note they omit the segment. Still T3 (respond): the argument
+  patterns are chosen so the action itself is the malicious step.
+- **One analytics rule per block.** Each file mixes a static argument-pattern
+  block with one or more behavior blocks (delimited by `// ====` headers, same
+  as the behavior-chains file). Deploy each block separately; the summarize/join
+  blocks drop the MDE `Timestamp/ReportId/DeviceId` triple — re-join
+  `arg_max(Timestamp, ReportId)` per group for MDE custom detections.
+- **No `FilteredNetworkEvents`/`FilteredFileEvents` sibling yet.** The
+  `DeviceNetworkEvents` / `DeviceFileEvents` behavior blocks inline the GLOBAL
+  device prefix + account exclusion. If these graduate, add the two functions to
+  `shared-functions.kql` and swap the inline filters for calls.
+- **Ownership / no-overlap.** `netsh interface portproxy add` (T1090) stays owned
+  by `t3-lolbas-malicious-respond.kql` — the C2 file adds only third-party
+  tunnelers, not a duplicate. The exfil `curl -T/--upload-file` line is scoped to
+  whole-**file** upload and does not overlap the T2 `curl -d/--data` (API-ping)
+  review line; `bitsadmin /upload` is a distinct verb from the T3 `transfer|download`.
+- **Endpoint byte-volume caveat.** MDE `DeviceNetworkEvents` carries **no** sent/
+  received byte counts, so a true "N MB out" exfil threshold is not expressible
+  from endpoint telemetry. The exfil file uses the archive→egress-tool **sequence**
+  as the tractable proxy; wire a volume rule on firewall/proxy/NetFlow logs as the
+  complement.
 
 ## Later ATT&CK stages → T4 (staging)
 

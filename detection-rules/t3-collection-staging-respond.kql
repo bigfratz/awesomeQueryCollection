@@ -1,0 +1,112 @@
+// File: t3-collection-staging-respond.kql   [STAGING]
+//
+// Tactic: COLLECTION (TA0009) + local staging (T1074.001). The first of three
+// new tactic-scoped files that extend the suite past the recon/execution stages
+// into the LATER attack chain: collect -> C2 -> exfiltrate. See also
+// t3-c2-beaconing-deaddrop-respond.kql and t3-exfiltration-egress-respond.kql.
+//
+// NAMING: no `LOLBAS` segment — like t4-defense-impairment-*, this class spans
+// beyond signed-binary abuse (native cmdlets, archivers, copy verbs), so it
+// follows the README's "new non-LOLBAS classes omit the segment" note. It stays
+// T3 (respond): the argument patterns below are chosen so the ACTION itself is
+// the malicious step (password-protected local archives, copying a browser
+// credential store, screen capture), not a dual-use primitive.
+//
+// WHY THIS IS OVERLOOKED: Defender's OOTB analytics are download/execution
+// biased. Local collection uses SIGNED, ALLOWED tools for their intended
+// function against your own data — 7-Zip making a password-protected archive,
+// `copy` reading a Chrome profile, `psr.exe` recording the screen — so binary
+// name alone is worthless. These key on the argument shape + target artifact.
+//
+// Two blocks:
+//   Block 1 (static)   — argument-pattern collection primitives. Deploy as one
+//                        analytics rule. Alphabetical by binary, `(1 == 2)` seed.
+//   Block 2 (behavior) — staging burst: many distinct doc/archive files written
+//                        into one staging dir in a short window. Deploy as its
+//                        own rule (summarize drops the MDE Timestamp/ReportId/
+//                        DeviceId triple — re-join arg_max if deploying as an MDE CD).
+//
+// Shared exclusions come from FilteredProcessEvents / FilteredDeviceEvents
+// (shared-functions.kql). Both blocks stay admin-excluded (GLOBAL) like the rest
+// of T3; edit the device prefix / service accounts / noise there, once.
+
+
+// ============================================================
+// Rule: T3-Collection-staging-respond   (static argument patterns)
+// ============================================================
+let archivers = dynamic(["7z.exe", "7za.exe", "7zr.exe", "rar.exe", "winrar.exe"]);
+let copy_verbs = dynamic(["copy", "copy-item", "xcopy", "robocopy"]);
+// Browser credential/session artifacts — the SQLite stores and DPAPI key blob.
+let browser_secrets = dynamic(["\\User Data\\", "Login Data", "\\Cookies", "Web Data", "\\Local State", "\\logins.json", "key4.db"]);
+let staging_paths = dynamic(["\\appdata\\", "\\users\\public\\", "\\programdata\\", "\\windows\\temp\\", "$recycle.bin", "%appdata%", "%temp%", "%public%"]);
+FilteredProcessEvents(true)   // excludeAdmin = true (GLOBAL — drops admin/SYSTEM/service noise); see shared-functions.kql
+| where
+    (1 == 2)   // inert seed — every detection below starts with `or`, so any line toggles freely
+    // 7z/rar/winrar making a PASSWORD-protected archive (T1560.001 + anti-inspection).
+    // `-hp` (rar: encrypt headers too) / `-p` (password). A local archive that hides
+    // its own file list is a staging tell — legit backups rarely password-encrypt.
+    or (FileName in~ (archivers) and ProcessCommandLine has_any ("-hp", "-p"))
+    // 7z/rar/winrar recursively archiving OFFICE/PST document sets (T1560.001). The
+    // -r recurse plus doc extensions in the same line = a targeted document sweep.
+    or (FileName in~ (archivers) and ProcessCommandLine has "-r"
+        and ProcessCommandLine has_any (".doc", ".xls", ".ppt", ".pdf", ".pst", ".ost", ".csv"))
+    // Copy verb reading a BROWSER credential/session store (T1005 / T1539). Copying
+    // Login Data / Cookies / Local State out of a profile is the DPAPI-theft precursor.
+    or (ProcessCommandLine has_any (copy_verbs) and ProcessCommandLine has_any (browser_secrets))
+    // Copy verb grabbing MAILBOX data files (T1114.001). PST/OST are the offline store;
+    // copying them wholesale is bulk email collection.
+    or (ProcessCommandLine has_any (copy_verbs) and ProcessCommandLine has_any (".pst", ".ost"))
+    // PowerShell Compress-Archive INTO a staging dir (T1560.001). The native cmdlet
+    // Defender rarely flags; zipping into Temp/Public/ProgramData/Recycle is the tell.
+    or (ProcessCommandLine has_any ("powershell.exe", "pwsh.exe")
+        and ProcessCommandLine has "compress-archive"
+        and ProcessCommandLine has_any (staging_paths))
+    // PowerShell clipboard scraping (T1115). Get-Clipboard / the WinForms Clipboard
+    // class in a script context — near-zero benign automation use.
+    or (ProcessCommandLine has_any ("powershell.exe", "pwsh.exe")
+        and ProcessCommandLine has_any ("get-clipboard", "windows.forms.clipboard", "system.windows.clipboard"))
+    // Screen capture via the .NET Graphics.CopyFromScreen API from a script (T1113).
+    or (ProcessCommandLine has_any ("powershell.exe", "pwsh.exe") and ProcessCommandLine has "copyfromscreen")
+    // psr.exe — Problem Steps Recorder driven headless as a screen recorder (T1113).
+    // /start begins capture, /output writes the MHT; essentially never run manually.
+    or (ProcessCommandLine has "psr.exe" and ProcessCommandLine has_any ("/start", "/output"))
+| extend Severity = "High"
+| order by Timestamp desc
+
+
+// ============================================================
+// Rule: T3-Collection-staging-burst-respond   (behavior / staging fan-out)
+// Local staging (T1074.001): the same process writing MANY distinct document/
+// archive files into ONE staging directory inside a short window — the "gather
+// everything into one place before exfil" shape. A single copy is BAU; 25+
+// distinct docs funneled into %Temp%/Public/ProgramData by one PID is not.
+// Diversity (dcount of files), not raw event volume, is the signal.
+// Reads DeviceFileEvents; no FilteredNetworkEvents/FileEvents sibling exists yet,
+// so the device prefix + account exclusion are inlined here (mirror of the
+// GLOBAL header). Consider adding a FilteredFileEvents function to
+// shared-functions.kql if this graduates.
+// Tuning: threshold 25 and window 15m are staging starts — validate against
+// backup agents / indexers / sync clients (OneDrive, indexer, AV scan) and
+// raise, or exclude those InitiatingProcess images, before go-live.
+// ============================================================
+let lookback = 1d;
+let staging_roots = dynamic(["\\temp\\", "\\users\\public\\", "\\programdata\\", "$recycle.bin", "\\appdata\\local\\temp\\"]);
+let collectable_exts = dynamic(["doc", "docx", "xls", "xlsx", "ppt", "pptx", "pdf", "csv", "txt", "pst", "ost", "zip", "rar", "7z", "cab"]);
+DeviceFileEvents
+| where Timestamp > ago(lookback)
+| where DeviceName startswith "X"                                  // <-- device prefix (same as GLOBAL)
+| where isnotempty(InitiatingProcessAccountName)
+| where not(InitiatingProcessAccountName has_any ("adm_", "administrator", "system", "lokaler dienst", "defaultuser0", "<svc_account_1>", "<svc_account_2>"))
+| where ActionType == "FileCreated"
+| extend LowerFolder = tolower(FolderPath)
+| where LowerFolder has_any (staging_roots)
+| extend Ext = tolower(tostring(split(FileName, ".")[-1]))
+| where Ext in (collectable_exts)
+| summarize DistinctFiles = dcount(FileName), SampleFiles = make_set(FileName, 20),
+    StagingDirs = make_set(FolderPath, 10),
+    FirstSeen = min(Timestamp), LastSeen = max(Timestamp)
+    by DeviceId, DeviceName, InitiatingProcessAccountName, InitiatingProcessFileName,
+       InitiatingProcessId, Window = bin(Timestamp, 15m)
+| where DistinctFiles >= 25
+| extend Severity = "High"
+| order by FirstSeen desc
