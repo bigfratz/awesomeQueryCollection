@@ -24,9 +24,9 @@
 // here (single-command ownership, per the README). This file adds the
 // third-party tunnelers and the network-behavior angles that rule can't see.
 //
-// The behavior blocks read DeviceNetworkEvents; there is no FilteredNetworkEvents
-// sibling yet, so the device prefix + account exclusion are inlined (mirror of
-// GLOBAL). Consider adding one to shared-functions.kql if these graduate.
+// The behavior blocks read DeviceNetworkEvents via the shared
+// FilteredNetworkEvents(true) function (shared-functions.kql) — same GLOBAL
+// device prefix / account exclusion as the rest of T3, edited in one place.
 
 
 // ============================================================
@@ -61,6 +61,7 @@ FilteredProcessEvents(true)   // excludeAdmin = true (GLOBAL); see shared-functi
 // Tuning: browsers/updaters are excluded below — extend the allow-list with any
 // legit CLI in your estate (e.g. gh.exe -> api.github.com, a CI agent). Scope
 // the domain list to what your business does NOT use natively.
+// Reads DeviceNetworkEvents via FilteredNetworkEvents(true) (shared-functions.kql).
 // ============================================================
 let lookback = 1d;
 // Hostnames only — MDE RemoteUrl is frequently just the host, so path-scoped
@@ -78,11 +79,8 @@ let allowed_initiators = dynamic([
     "chrome.exe", "msedge.exe", "firefox.exe", "iexplore.exe", "opera.exe", "brave.exe",
     "msedgewebview2.exe", "outlook.exe", "teams.exe", "onedrive.exe", "code.exe",
     "acrobat.exe", "acrord32.exe", "slack.exe", "githubdesktop.exe"]);
-DeviceNetworkEvents
+FilteredNetworkEvents(true)   // excludeAdmin = true (GLOBAL); see shared-functions.kql
 | where Timestamp > ago(lookback)
-| where DeviceName startswith "X"                                  // <-- device prefix (same as GLOBAL)
-| where isnotempty(InitiatingProcessAccountName)
-| where not(InitiatingProcessAccountName has_any ("adm_", "administrator", "system", "lokaler dienst", "defaultuser0", "<svc_account_1>", "<svc_account_2>"))
 | where ActionType in ("ConnectionSuccess", "ConnectionAttempted")
 | where isnotempty(RemoteUrl) and RemoteUrl has_any (deaddrop_hosts)
 | where not(InitiatingProcessFileName in~ (allowed_initiators))
@@ -111,15 +109,13 @@ DeviceNetworkEvents
 //                        allow-list their InitiatingProcess/RemoteIP first.
 // Window/order: requires serialize for prev(); run as a scheduled rule over a
 // window a few multiples of the largest AvgGap you want to catch.
+// Reads DeviceNetworkEvents via FilteredNetworkEvents(true) (shared-functions.kql).
 // ============================================================
 let lookback = 1d;
 let known_beacon_procs = dynamic([   // legit heartbeat agents — allow-list to taste
     "msmpeng.exe", "sensendr.exe", "mssense.exe", "healthservice.exe", "microsoftedgeupdate.exe"]);
-DeviceNetworkEvents
+FilteredNetworkEvents(true)   // excludeAdmin = true (GLOBAL); see shared-functions.kql
 | where Timestamp > ago(lookback)
-| where DeviceName startswith "X"                                  // <-- device prefix (same as GLOBAL)
-| where isnotempty(InitiatingProcessAccountName)
-| where not(InitiatingProcessAccountName has_any ("adm_", "administrator", "system", "lokaler dienst", "defaultuser0", "<svc_account_1>", "<svc_account_2>"))
 | where ActionType in ("ConnectionSuccess", "ConnectionAttempted")
 | where isnotempty(RemoteIP) and not(ipv4_is_private(RemoteIP))    // external peers only
 | where not(InitiatingProcessFileName in~ (known_beacon_procs))

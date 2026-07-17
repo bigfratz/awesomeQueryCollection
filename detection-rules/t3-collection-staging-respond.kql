@@ -81,10 +81,9 @@ FilteredProcessEvents(true)   // excludeAdmin = true (GLOBAL — drops admin/SYS
 // everything into one place before exfil" shape. A single copy is BAU; 25+
 // distinct docs funneled into %Temp%/Public/ProgramData by one PID is not.
 // Diversity (dcount of files), not raw event volume, is the signal.
-// Reads DeviceFileEvents; no FilteredNetworkEvents/FileEvents sibling exists yet,
-// so the device prefix + account exclusion are inlined here (mirror of the
-// GLOBAL header). Consider adding a FilteredFileEvents function to
-// shared-functions.kql if this graduates.
+// Reads DeviceFileEvents via the shared FilteredFileEvents(true) function
+// (shared-functions.kql) — same GLOBAL device prefix / account exclusion as the
+// rest of T3, edited in one place.
 // Tuning: threshold 25 and window 15m are staging starts — validate against
 // backup agents / indexers / sync clients (OneDrive, indexer, AV scan) and
 // raise, or exclude those InitiatingProcess images, before go-live.
@@ -92,11 +91,8 @@ FilteredProcessEvents(true)   // excludeAdmin = true (GLOBAL — drops admin/SYS
 let lookback = 1d;
 let staging_roots = dynamic(["\\temp\\", "\\users\\public\\", "\\programdata\\", "$recycle.bin", "\\appdata\\local\\temp\\"]);
 let collectable_exts = dynamic(["doc", "docx", "xls", "xlsx", "ppt", "pptx", "pdf", "csv", "txt", "pst", "ost", "zip", "rar", "7z", "cab"]);
-DeviceFileEvents
+FilteredFileEvents(true)   // excludeAdmin = true (GLOBAL); see shared-functions.kql
 | where Timestamp > ago(lookback)
-| where DeviceName startswith "X"                                  // <-- device prefix (same as GLOBAL)
-| where isnotempty(InitiatingProcessAccountName)
-| where not(InitiatingProcessAccountName has_any ("adm_", "administrator", "system", "lokaler dienst", "defaultuser0", "<svc_account_1>", "<svc_account_2>"))
 | where ActionType == "FileCreated"
 | extend LowerFolder = tolower(FolderPath)
 | where LowerFolder has_any (staging_roots)

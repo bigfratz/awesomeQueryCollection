@@ -11,7 +11,7 @@ legitimately. All rules live in this one folder, prefixed by tier (`t1-` … `t4
 
 | File | Purpose | Automation action |
 |------|---------|-------------------|
-| `shared-functions.kql` | **Deploy first.** Saved functions holding the suite's exclusions in one place: `FilteredProcessEvents(excludeAdmin)` and its `FilteredDeviceEvents` sibling. Every tiered rule calls these. | None — infrastructure |
+| `shared-functions.kql` | **Deploy first.** Saved functions holding the suite's exclusions in one place: `FilteredProcessEvents(excludeAdmin)` and its `FilteredDeviceEvents` / `FilteredNetworkEvents` / `FilteredFileEvents` siblings (one per `Device*` table the rules read). Every tiered rule calls these. | None — infrastructure |
 | `t1-lolbas-signals-watch.kql` | **Deploy.** Discovery/context + unusual tooling — lowest-confidence signals. | Watch (enrichment/ticketing) |
 | `t2-lolbas-suspicious-review.kql` | **Deploy.** Dual-use techniques + light persistence; needs a second signal to escalate. | Review (analyst) |
 | `t3-lolbas-malicious-respond.kql` | **Deploy.** Execution / evasion / initial-access chains; rare or no benign explanation. | Respond (aggressive) |
@@ -71,7 +71,8 @@ light persistence). Conventions shared across all three:
 
 ### Before deploying
 0. Deploy `shared-functions.kql` first (save `FilteredProcessEvents` /
-   `FilteredDeviceEvents` as workspace functions), and set the device prefix,
+   `FilteredDeviceEvents` / `FilteredNetworkEvents` / `FilteredFileEvents` as
+   workspace functions), and set the device prefix,
    `<svc_account_n>` placeholders, and noise filters **there** — one place,
    applies to every rule.
 1. Set the interpreter FP list (`has_any ("x")`) in the T2 rule.
@@ -133,10 +134,14 @@ Conventions and caveats:
   as the behavior-chains file). Deploy each block separately; the summarize/join
   blocks drop the MDE `Timestamp/ReportId/DeviceId` triple — re-join
   `arg_max(Timestamp, ReportId)` per group for MDE custom detections.
-- **No `FilteredNetworkEvents`/`FilteredFileEvents` sibling yet.** The
-  `DeviceNetworkEvents` / `DeviceFileEvents` behavior blocks inline the GLOBAL
-  device prefix + account exclusion. If these graduate, add the two functions to
-  `shared-functions.kql` and swap the inline filters for calls.
+- **Shared network/file exclusions.** The `DeviceNetworkEvents` /
+  `DeviceFileEvents` behavior blocks call `FilteredNetworkEvents(true)` /
+  `FilteredFileEvents(true)` (added to `shared-functions.kql`) — the same GLOBAL
+  device prefix + account exclusion as the rest of the suite, in one place. (The
+  download-chain rule in `t3-lolbas-behavior-chains-respond.kql` still joins the
+  **raw** `DeviceNetworkEvents` on purpose — it anchors on a filtered process leg,
+  so the exclusions already apply; the `Filtered*` siblings are for rules that
+  START from the network/file table.)
 - **Ownership / no-overlap.** `netsh interface portproxy add` (T1090) stays owned
   by `t3-lolbas-malicious-respond.kql` — the C2 file adds only third-party
   tunnelers, not a duplicate. The exfil `curl -T/--upload-file` line is scoped to

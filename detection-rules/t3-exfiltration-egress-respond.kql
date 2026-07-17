@@ -26,9 +26,9 @@
 // endpoint proxy for bulk exfil; wire a volume rule on your egress proxy logs
 // as the complement.
 //
-// Block 1 uses FilteredProcessEvents (shared-functions.kql). Block 2 joins
-// DeviceFileEvents + DeviceProcessEvents; the file leg inlines the device prefix
-// + account exclusion (no FilteredFileEvents sibling yet).
+// Block 1 uses FilteredProcessEvents (shared-functions.kql). Block 2 joins the
+// file leg (FilteredFileEvents) with the process leg (FilteredProcessEvents) —
+// both shared functions, same GLOBAL exclusions edited in one place.
 
 
 // ============================================================
@@ -87,8 +87,8 @@ FilteredProcessEvents(true)   // excludeAdmin = true (GLOBAL); see shared-functi
 // Tuning: window 30m and the egress-tool list are staging starts. If backup/
 // sync jobs (which archive then upload legitimately) hit it, exclude them by
 // InitiatingProcessCommandLine, not by removing the tool.
-// File leg inlines the GLOBAL device prefix + account exclusion (no
-// FilteredFileEvents sibling yet); process leg uses FilteredProcessEvents.
+// File leg uses FilteredFileEvents(true); process leg uses
+// FilteredProcessEvents(true) — both shared (shared-functions.kql).
 // ============================================================
 let lookback = 1d;
 let window = 30m;
@@ -99,11 +99,8 @@ let egress_cmd_markers = dynamic(["rclone", "aws s3", "gsutil", "gcloud storage"
     "bitsadmin", "uploadfile", "uploaddata", "invoke-restmethod", "send-mailmessage", "--upload-file"]);
 // Leg A: archive files created.
 let archives_created =
-    DeviceFileEvents
+    FilteredFileEvents(true)   // excludeAdmin = true (GLOBAL); see shared-functions.kql
     | where Timestamp > ago(lookback)
-    | where DeviceName startswith "X"                             // <-- device prefix (same as GLOBAL)
-    | where isnotempty(InitiatingProcessAccountName)
-    | where not(InitiatingProcessAccountName has_any ("adm_", "administrator", "system", "lokaler dienst", "defaultuser0", "<svc_account_1>", "<svc_account_2>"))
     | where ActionType == "FileCreated"
     | extend Ext = tolower(tostring(split(FileName, ".")[-1]))
     | where Ext in (archive_exts)
