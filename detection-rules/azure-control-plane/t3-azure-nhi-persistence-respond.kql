@@ -1,0 +1,176 @@
+// File: t3-azure-nhi-persistence-respond.kql   [STAGING]
+//
+// Domain: AZURE CONTROL PLANE (Entra audit + Microsoft Graph activity). Reads
+// AuditLogs / MicrosoftGraphActivityLogs, keyed on a principal object-id, via
+// azure-control-plane/shared-functions.kql. Sibling of the T4 bridges file.
+//
+// Tactic: PERSISTENCE (TA0003) + the Graph-plane grant that enables PRIVILEGE
+// ESCALATION (TA0004). Covers Plane 5 and the NHI-sprawl section of the Sysdig
+// TRT incident — see ../references/2026-07-14-sysdig-azure-permission-takeover.md.
+//
+// TIER: T3 (respond). Higher-volume than the T4 bridges (apps DO get new secrets
+// and consented permissions legitimately), so they route to an analyst-actioned
+// respond rather than auto-isolate. What makes them T3 and not T2: each is a
+// recognised persistence/takeover PRIMITIVE, and the report names the admin
+// consent of a tier-0 Graph permission as "itself a high-signal event to alert on."
+//
+// WHY THIS MATTERS (from the incident): the takeover started with a leaked NHI
+// holding one admin-consented Graph permission (RoleManagement.ReadWrite.Directory)
+// and ended with attacker secrets planted on 26 app registrations. There is NO
+// native Azure view that lists "every credential on every app registration," so
+// the audit-log credential-add event is the reconstructable record of the
+// persistence blast radius. Capturing it is the point.
+//
+// HEADER: GLOBAL (excludeAdmin = true) here — unlike the T4 file. App-lifecycle
+// automation (IaC that rotates secrets, app-management pipelines) is exactly the
+// benign source, so honoring the KnownAutomationPrincipals allow-list is correct.
+// Vet and shorten that list; do NOT allow-list a human-admin identity here.
+//
+// OPERATOR NOTE: OperationName / permission strings are matched with `contains`
+// or `matches regex` (substring), NOT `has`/`has_any` — those are term-indexed
+// and miss multi-word phrases, dotted permission names, and hyphenated GUIDs.
+//
+// FOUR BLOCKS, each its OWN analytics rule:
+//   Block 1 (static, AuditLogs) — tier-0 Graph application-permission grant /
+//                                 admin consent (the takeover-equivalent event).
+//   Block 2 (static, AuditLogs) — credential (secret/cert) added to an app or SP
+//                                 (the "26 backdoored apps" persistence primitive).
+//   Block 3 (behavior, AuditLogs) — credential-add FAN-OUT: one actor adds
+//                                 credentials to N distinct apps in a window.
+//   Block 4 (static, MicrosoftGraphActivityLogs) — direct Graph-plane writes to
+//                                 app/SP credential endpoints (the plane the
+//                                 audit log can miss). OFF BY DEFAULT — see caveat.
+//
+// COVERAGE CAVEAT: MicrosoftGraphActivityLogs is a tenant diagnostic setting,
+// OFF by default, needs Entra P1. In the source incident it started flowing
+// mid-attack and MISSED the escalation. Block 4 returns nothing until it's on;
+// Blocks 1-3 (AuditLogs) are the durable fallback and should be your primary.
+
+
+// ============================================================
+// Rule: T3-Azure-graph-tier0-permission-grant-respond   (static — AuditLogs)
+// The Graph application-permission / admin-consent event. An app-role assignment
+// of a tenant-takeover-equivalent Graph permission, or an admin consent that
+// includes one, is the capability that made directory takeover possible.
+// ============================================================
+FilteredAuditLogs(true)   // GLOBAL — honor the automation allow-list
+| where Result =~ "success"
+| where OperationName in~ (
+    "Add app role assignment to service principal",   // application permission granted to an SP
+    "Add delegated permission grant",                 // OAuth2 delegated grant
+    "Consent to application")                          // admin/user consent flow
+| extend _tr = tostring(TargetResources)
+// tier-0 Graph permissions (takeover-equivalent) by name, OR the well-known
+// appRole GUIDs in case only ids are logged. Substring match on the serialized
+// target resources / modified properties.
+| where _tr matches regex @"RoleManagement\.ReadWrite\.Directory|AppRoleAssignment\.ReadWrite\.All|Application\.ReadWrite\.All|Directory\.ReadWrite\.All|PrivilegedAccess\.ReadWrite\.AzureADGroup|RoleManagement\.ReadWrite\.Exchange"
+    or _tr contains "9e3f62cf-ca93-4989-b6ce-bf83c28f9fe8"   // RoleManagement.ReadWrite.Directory
+    or _tr contains "06b708a9-e830-4db3-a914-8e69da51d44f"   // AppRoleAssignment.ReadWrite.All
+    or _tr contains "1bfefb4e-e0b5-418b-a88f-73c46d2cc8e9"   // Application.ReadWrite.All
+| extend Severity = "High"
+| project TimeGenerated, OperationName, Principal, PrincipalName, ActorIsServicePrincipal,
+    TargetResources, Result, CorrelationId
+| order by TimeGenerated desc
+
+
+// ============================================================
+// Rule: T3-Azure-app-credential-added-respond   (static — AuditLogs)
+// A secret or certificate added to an application registration or service
+// principal (T1098.001). The persistence primitive: each added credential is a
+// standalone, valid way back in that survives rotating the original leaked secret
+// and removing any role grant.
+// ============================================================
+FilteredAuditLogs(true)   // GLOBAL
+| where Result =~ "success"
+| extend _tr = tostring(TargetResources)
+// credential-management operations (hyphen and en-dash variants both seen), plus
+// the broader "Update service principal" gated by the credential filter below.
+| where OperationName contains "Certificates and secrets management"
+    or OperationName contains "service principal credential"
+    or OperationName startswith "Add service principal"
+    or OperationName == "Update service principal"
+// keep it to credential-bearing changes: `contains "credential"` is case-
+// insensitive so it covers passwordCredentials / keyCredentials /
+// StrongAuthenticationCredential; KeyDescription catches cert additions.
+| where _tr contains "credential" or _tr contains "KeyDescription"
+| extend Severity = "High"
+| project TimeGenerated, OperationName, Principal, PrincipalName, ActorIsServicePrincipal,
+    TargetResources, Result, CorrelationId
+| order by TimeGenerated desc
+
+
+// ============================================================
+// Rule: T3-Azure-app-credential-fanout-respond   (behavior — AuditLogs)
+// The "26 backdoored app registrations" signature: ONE actor adds credentials to
+// MANY distinct apps in a short window. Any single add is Block 2's job; the
+// FAN-OUT is the mass-persistence tell and the higher-confidence shape.
+// TUNING: threshold (>=5 distinct apps / 1h) is a staging start — set it above
+// your busiest legitimate secret-rotation job's per-window app count, or exclude
+// that job's SP via KnownAutomationPrincipals. Sentinel scheduled-rule shape: the
+// summarize drops per-row ids; map the incident entity on `Principal`.
+// ============================================================
+let window = 1h;
+let threshold = 5;
+FilteredAuditLogs(true)   // GLOBAL
+| where Result =~ "success"
+| extend _tr = tostring(TargetResources)
+| where OperationName contains "Certificates and secrets management"
+    or OperationName contains "service principal credential"
+    or OperationName startswith "Add service principal"
+    or OperationName == "Update service principal"
+| where _tr contains "credential" or _tr contains "KeyDescription"
+// pull the target app/SP identifier so we can count DISTINCT targets per actor
+| mv-apply tr = TargetResources on (
+    extend TargetAppId = tostring(tr.id), TargetAppName = tostring(tr.displayName)
+  )
+| summarize
+    TargetApps   = make_set(TargetAppName, 100),
+    DistinctApps = dcount(TargetAppId),
+    Adds         = count(),
+    FirstAdd     = min(TimeGenerated),
+    LastAdd      = max(TimeGenerated)
+    by Principal, PrincipalName, TimeBin = bin(TimeGenerated, window)
+| where DistinctApps >= threshold
+| extend Severity = "Critical"   // mass credential persistence -> escalate above the single-add T3
+| project FirstAdd, LastAdd, Principal, PrincipalName, DistinctApps, Adds, TargetApps, TimeBin
+| order by FirstAdd desc
+
+
+// ============================================================
+// Rule: T3-Azure-graph-app-tampering-respond   (static — MicrosoftGraphActivityLogs)
+// The Graph-plane view of the same tampering, for what the audit log misses:
+// direct writes to application/servicePrincipal credential + appRoleAssignment
+// endpoints. OFF BY DEFAULT (see header caveat) — deploy only once the tenant
+// diagnostic setting is confirmed flowing; Blocks 1-3 are the primary until then.
+// ============================================================
+FilteredGraphActivity(true)   // GLOBAL
+| where ResponseStatusCode between (200 .. 299)   // successful writes only
+| where RequestMethod in~ ("POST", "PATCH", "PUT")
+| extend _uri = tolower(tostring(RequestUri))
+| where
+    // add a password/key credential to an application or service principal
+    (_uri contains "/applications/"
+        and (_uri contains "addpassword" or _uri contains "addkey"
+             or _uri contains "/passwordcredentials" or _uri contains "/keycredentials"))
+    or (_uri contains "/serviceprincipals/"
+        and (_uri contains "addpassword" or _uri contains "addkey"
+             or _uri contains "/passwordcredentials" or _uri contains "/keycredentials"))
+    // grant an app-role (application permission) to a service principal
+    or (_uri contains "/serviceprincipals/" and _uri contains "approleassignedto")
+    or _uri contains "/oauth2permissiongrants"
+| extend Severity = "High"
+| project TimeGenerated, RequestMethod, RequestUri, Principal, AppId, ResponseStatusCode, IPAddress
+| order by TimeGenerated desc
+
+
+// ============================================================
+// NOTES
+// - Ownership: the Graph tier-0 PERMISSION grant (Block 1) and the directory-role
+//   grant an SP performs USING that permission (T4 bridges file, Block 1) are two
+//   different events in the chain — grant-of-capability here, use-of-capability
+//   there. Route Block 1 as enrichment onto the T4 chain incident when both fire
+//   for the same Principal.
+// - The tier-0 permission and appRole-GUID lists are a starting high-risk set:
+//   maintain them as your "short, deliberately-maintained" allow-list-by-negation
+//   (the report's recommendation #2). Add more AppRoleAssignment.ReadWrite.All
+//   friends as your tenant's threat model requires.
