@@ -1,0 +1,172 @@
+// File: t4-azure-permission-bridges-isolate.kql   [STAGING]
+//
+// Domain: AZURE CONTROL PLANE (Entra audit + Azure Activity). NOT endpoint —
+// this family reads AuditLogs / AzureActivity, keyed on a principal object-id,
+// with its own shared functions (azure-control-plane/shared-functions.kql).
+//
+// Tactic: PRIVILEGE ESCALATION / PERSISTENCE across Azure's disjoint permission
+// planes (TA0004 / TA0003). Models the Sysdig TRT "Azure permission takeover"
+// kill chain — see ../references/2026-07-14-sysdig-azure-permission-takeover.md.
+//
+// TIER: T4 (isolate). These are the "alert on every occurrence" cross-plane
+// BRIDGES the report calls high-signal / low-noise — the exact moves an attacker
+// uses to hop between permission systems, each near-zero legitimate use.
+//
+// HEADER: MINIMAL (excludeAdmin = false) on every block. The whole point is
+// elevated NHI activity; excluding privileged/automation principals would blind
+// the rule to the very thing it hunts. Vetted automation goes on the SHORT
+// KnownAutomationPrincipals allow-list in shared-functions.kql and is only
+// honored where a block explicitly passes true.
+//
+// OPERATOR NOTE: multi-word / path op strings use `in~` (exact), `startswith`,
+// or `contains` (substring) — NOT `has`/`has_any`, which are term-indexed and
+// do not match phrases or `a/b/c` paths reliably. AzureActivity op strings are
+// lowercased first (`_op`) so a single casing convention is matched.
+//
+// FOUR BLOCKS, each its OWN analytics rule:
+//   Block 1 (static, AuditLogs)   — Entra-plane bridges: elevateAccess + an SP
+//                                    self-granting a privileged directory role.
+//   Block 2 (static, AzureActivity) — bearer-key mints (listKeys) + Key Vault
+//                                    access-policy self-grant (resource-local).
+//   Block 3 (behavior, union)     — THE CROSS-PLANE CHAIN: one principal touches
+//                                    >=2 planes incl. a bridge/key-harvest step
+//                                    inside a window. The piece native consoles
+//                                    cannot express, and the reason this file
+//                                    exists.
+//
+// COVERAGE CAVEAT (from the incident): elevateAccess lives in the Entra audit
+// log, NOT in AzureActivity, despite being a resource-plane grant. Its exact
+// OperationName can vary by tenant routing — CONFIRM the Block 1 elevateAccess
+// term against your own telemetry before go-live (same discipline as the
+// endpoint suite's "confirm wevtutil qe matches your term form"). Block 3 catches
+// it via the union regardless of which table it lands in.
+
+
+// ============================================================
+// Rule: T4-Azure-entra-bridge-isolate   (static — AuditLogs / Entra plane)
+// ============================================================
+FilteredAuditLogs(false)   // MINIMAL — keep every principal; see shared-functions.kql
+| where Result =~ "success"
+| extend _tr = tostring(TargetResources)
+| where
+    // elevateAccess: GA -> User Access Administrator at root (/). The single call
+    // that crosses "owns the directory" -> "owns every resource" (TA0004). Near-
+    // zero benign use. CONFIRM this term vs. your telemetry (see header caveat).
+    (OperationName contains "elevateAccess" or OperationName contains "Elevate access")
+    // A SERVICE PRINCIPAL grants a privileged directory role (incl. to itself) —
+    // the RoleManagement.ReadWrite.Directory tenant-takeover capability in action
+    // (T1098.003). Actor is an app; target role is tier-0. ("Company Administrator"
+    // is GA's legacy directoryRole name and still appears in some tenants.)
+    or (ActorIsServicePrincipal
+        and OperationName startswith "Add member to role"
+        and _tr matches regex @"(Global|Company|Privileged Role|User Access|Privileged Authentication) Administrator")
+| extend Severity = "Critical"
+| project TimeGenerated, OperationName, Principal, PrincipalName, ActorIsServicePrincipal,
+    TargetResources, Result, CorrelationId
+| order by TimeGenerated desc
+
+
+// ============================================================
+// Rule: T4-Azure-resource-bridge-isolate   (static — AzureActivity / RBAC plane)
+// Bearer-key MINTS + the Key Vault access-policy self-grant. The listKeys call is
+// your ONLY chance to see a bearer key: it converts an identity-scoped grant into
+// an identity-less secret whose every later use is invisible (Plane 4). Miss this
+// event and the access it created is permanent and untraceable.
+// ============================================================
+FilteredAzureActivity(false)   // MINIMAL — keep every caller
+| extend _op = tolower(OperationNameValue)
+| where
+    // storageAccounts/listKeys — storage account shared-key harvest (T1552.001 /
+    // credential access -> identity-less data-plane access).
+    _op contains "microsoft.storage/storageaccounts/listkeys"
+    // Event Hub namespace listKeys — root SAS for the telemetry transport itself.
+    // In the incident this stole the keys to the tenant's own audit pipeline; the
+    // report flags it as the one to alert on LOUDEST (attacker goes after your
+    // visibility next). (T1552.001 / TA0005 defense evasion of the log pipeline.)
+    or _op contains "microsoft.eventhub/namespaces/authorizationrules/listkeys"
+    // Function App host keys — bearer access to invoke/tamper functions (T1552.001).
+    or _op contains "microsoft.web/sites/host/listkeys"
+    or _op contains "/functions/listkeys"
+    // Service Bus listKeys — same identity-less-key class.
+    or _op contains "microsoft.servicebus/namespaces/authorizationrules/listkeys"
+    // Key Vault access-policy SELF-GRANT (resource-local Plane 3). Adds the caller
+    // to the vault's OWN access-policy list — a permission store the RBAC blade
+    // never shows. Paired in the incident with roleAssignments/write on the same
+    // vault to cover both auth models at once (T1098 / T1555).
+    or _op contains "microsoft.keyvault/vaults/accesspolicies/write"
+| extend Severity = "Critical"
+| project TimeGenerated, OperationNameValue, Principal, CallerIpAddress,
+    ResourceGroup, _ResourceId, ActivityStatusValue
+| order by TimeGenerated desc
+
+
+// ============================================================
+// Rule: T4-Azure-cross-plane-escalation-chain-isolate   (behavior — the union)
+// THE cross-plane correlation the native consoles can't give you. Normalizes the
+// Entra plane (AuditLogs) and the resource plane (AzureActivity) onto ONE
+// `Principal` timeline, then fires when a SINGLE principal crosses >=2 planes and
+// touches a bridge or key-harvest step inside the window. Turns
+//   "SP self-grants GA -> elevates to root UAA -> assigns Owner -> harvests keys"
+// into ONE alertable chain instead of five unrelated log lines in two tables.
+//
+// This is the same normalize-then-summarize-by-key shape as the endpoint
+// collect->egress bridge, but joined on IDENTITY (Principal) instead of DeviceId,
+// because that is the only key these planes share once normalized.
+//
+// TUNING: window and thresholds are staging starts. If legitimate break-glass /
+// tenant-recovery flows (a human GA who genuinely runs elevateAccess then fixes
+// RBAC) trip it, exclude that identity via KnownAutomationPrincipals — do NOT
+// widen the step list. Sentinel scheduled-rule shape: the summarize drops any
+// per-row id, so map the entity on `Principal` for incident grouping.
+// ============================================================
+let lookback = 1d;
+let window = 2h;
+let escalation =
+    union
+      ( FilteredAuditLogs(false)
+        | where Result =~ "success"
+        | where TimeGenerated > ago(lookback)
+        | extend Plane = "Entra", Action = tolower(OperationName) ),
+      ( FilteredAzureActivity(false)
+        | where TimeGenerated > ago(lookback)
+        | extend Plane = "RBAC", Action = tolower(OperationNameValue) )
+    // keep only the escalation-relevant verbs so the timeline is signal, not chatter
+    | where Action matches regex "elevateaccess|add member to role|roleassignments/write|storageaccounts/listkeys|authorizationrules/listkeys|host/listkeys|vaults/accesspolicies/write"
+    // tag each row so the aggregation can reason about step KIND, not array substrings
+    | extend IsElevate      = Action contains "elevateaccess"
+    | extend IsHarvest      = (Action contains "storageaccounts/listkeys"
+                                or Action contains "authorizationrules/listkeys"
+                                or Action contains "host/listkeys")
+    | extend IsAccessPolicy = Action contains "vaults/accesspolicies/write";
+escalation
+| summarize
+    Planes       = make_set(Plane),
+    Steps        = make_set(Action),
+    StepCount    = dcount(Action),
+    ElevateCount = countif(IsElevate),
+    BridgeCount  = countif(IsElevate or IsHarvest or IsAccessPolicy),
+    FirstStep    = min(TimeGenerated),
+    LastStep     = max(TimeGenerated)
+    by Principal, TimeBin = bin(TimeGenerated, window)
+// cross-plane, AND either the marquee bridge (elevateAccess) fired, or the
+// principal ran a broad chain (3+ distinct verbs) that includes a bridge/harvest.
+| where array_length(Planes) >= 2
+    and (ElevateCount > 0 or (StepCount >= 3 and BridgeCount > 0))
+| extend Severity = "Critical"
+| project FirstStep, LastStep, Principal, Planes, Steps, StepCount, ElevateCount, BridgeCount, TimeBin
+| order by FirstStep asc
+
+
+// ============================================================
+// NOTES / BACKLOG
+// - roleAssignments/write (subscription-scope Owner self-assign) is intentionally
+//   NOT a standalone isolate line: on its own it is too common in normal IaC. It
+//   earns its severity only IN the Block 3 chain (as one of the 3+ verbs) or in a
+//   dedicated T3 respond rule scoped to root ("/") scope. Add that T3 if the
+//   chain proves too tight.
+// - Key Vault DATA-plane reads (SecretGet/KeyGet) after an access-policy self-
+//   grant would be the confirming follow-through, but AzureDiagnostics data-plane
+//   logging is OFF by default — wire FilteredKeyVaultDiag into a Block-3 variant
+//   only once you've confirmed those logs actually flow (see shared-functions.kql).
+// - MicrosoftGraphActivityLogs (Graph-plane recon, the app-permission grant that
+//   started the whole incident) is covered in the sibling T3 NHI-persistence file.

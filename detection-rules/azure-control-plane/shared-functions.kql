@@ -1,0 +1,121 @@
+// ============================================================
+// SHARED FUNCTIONS (Azure control-plane family) — single source of truth for
+// this family's exclusions and, crucially, the identity NORMALIZATION every
+// cross-plane rule depends on.
+//
+// This is the cloud-control-plane sibling of endpoint/shared-functions.kql.
+// The two families read entirely different tables and DO NOT share a join key
+// (an endpoint DeviceId vs. an Entra/Azure principal object-id), so they keep
+// separate shared-function files on purpose. Deploy THIS file into the same
+// Sentinel / Log Analytics workspace that holds AuditLogs, AzureActivity,
+// AzureDiagnostics and MicrosoftGraphActivityLogs.
+//
+// ------------------------------------------------------------
+// THE CORE IDEA — correlate by IDENTITY, not by plane.
+// Azure's five permission planes name the actor four different ways:
+//   AuditLogs                 -> InitiatedBy.app.servicePrincipalId | .user.id
+//   AzureActivity             -> Caller
+//   AzureDiagnostics (KeyVault) -> identity_claim_oid_g (caller oid claim)
+//   MicrosoftGraphActivityLogs -> ServicePrincipalId | AppId
+// Every function below projects a single `Principal` (object-id-or-UPN) column
+// so a chain that hops planes reads as ONE timeline for ONE principal. That is
+// the whole game — the join key the native consoles never give you.
+//
+// ------------------------------------------------------------
+// GLOBAL vs MINIMAL — same boolean switch as the endpoint family:
+//   excludeAdmin = true   -> GLOBAL  : drop known-automation service principals
+//                                       (IaC/CI/CD pipelines) to cut benign noise
+//   excludeAdmin = false  -> MINIMAL : keep EVERY principal. Most bridge rules
+//                                       pass false — the entire point is elevated
+//                                       NHI activity, and the allow-list is the
+//                                       first thing an attacker's SP would hide in.
+// When excludeAdmin is false the `excludeAdmin and ...` term is always false, so
+// `not(false)` keeps the row — the allow-list switches itself off.
+//
+// ------------------------------------------------------------
+// BEFORE DEPLOYING — set these in ONE place (here), not per-rule:
+//   1. KnownAutomationPrincipals — object-ids (and/or appIds) of vetted service
+//      principals that legitimately assign roles / read keys (Terraform, ARM,
+//      CI/CD, backup). Keep it SHORT and deliberately maintained — this is the
+//      "deliberately-maintained allow-list" the source report argues for. An
+//      empty list is the safe default (nothing excluded).
+//   2. If you route Key Vault through the dedicated AZKVAuditLogs table instead
+//      of AzureDiagnostics, see the note on FilteredKeyVaultDiag below.
+//
+// HOW TO SAVE:
+//   * Sentinel / Log Analytics: paste each function BODY, "Save as function",
+//     set the alias to the name below, declare param (excludeAdmin, bool, =true).
+//   * ADX / Defender advanced hunting:
+//       .create-or-alter function FilteredAuditLogs(excludeAdmin: bool = true) { <body> }
+// The `let` form below is also directly usable at the top of a single query to
+// test a rule standalone before the saved functions exist.
+// ============================================================
+
+
+// The deliberately-maintained allow-list of vetted automation principals.
+// Put object-ids AND/OR appIds here; the functions match either. KEEP IT SHORT.
+let KnownAutomationPrincipals = dynamic([
+    "<terraform_sp_object_id>",
+    "<cicd_sp_object_id>",
+    "<backup_sp_object_id>"
+]);
+
+
+// FilteredAuditLogs(excludeAdmin) — Entra audit log (directory-role grants,
+// elevateAccess, app-registration credential/permission changes, consent).
+// Normalizes the actor to `Principal` and flags whether the actor is an app (SP)
+// — `ActorIsServicePrincipal` is what the "grantee is an SP" bridge rules key on.
+let FilteredAuditLogs = (excludeAdmin: bool = true) {
+    AuditLogs
+    | extend _initiator = parse_json(tostring(InitiatedBy))
+    | extend Principal = tostring(coalesce(_initiator.app.servicePrincipalId, _initiator.user.id))
+    | extend PrincipalName = tostring(coalesce(_initiator.app.displayName, _initiator.user.userPrincipalName))
+    | extend ActorIsServicePrincipal = isnotempty(tostring(_initiator.app.servicePrincipalId))
+    | extend PrincipalAppId = tostring(_initiator.app.appId)
+    | where isnotempty(Principal)
+    | where not(excludeAdmin and (Principal in (KnownAutomationPrincipals)
+                                  or PrincipalAppId in (KnownAutomationPrincipals)))
+};
+
+
+// FilteredAzureActivity(excludeAdmin) — Azure Activity log (resource control
+// plane): RBAC roleAssignments/write, elevateAccess DOES NOT land here (it's in
+// AuditLogs — that's the point of the bridge), storageAccounts/listKeys,
+// Event Hub / Function App listKeys, Key Vault accessPolicies/write.
+// Success-only by default — every operation in the source incident returned 200.
+let FilteredAzureActivity = (excludeAdmin: bool = true) {
+    AzureActivity
+    | where ActivityStatusValue in~ ("Success", "Succeeded")
+    | extend Principal = tostring(Caller)
+    | where isnotempty(Principal)
+    | where not(excludeAdmin and Principal in (KnownAutomationPrincipals))
+};
+
+
+// FilteredKeyVaultDiag(excludeAdmin) — Key Vault DATA-plane diagnostics
+// (secret/key/cert reads and access-policy changes ON the vault). Off by default
+// in Azure; if you get nothing back, data-plane logging was never enabled (see
+// the coverage caveat in the rule headers). If your tenant routes Key Vault to
+// the dedicated AZKVAuditLogs table instead, swap the first two lines for
+// `AZKVAuditLogs` and drop the ResourceType filter — the rest is identical.
+let FilteredKeyVaultDiag = (excludeAdmin: bool = true) {
+    AzureDiagnostics
+    | where ResourceProvider == "MICROSOFT.KEYVAULT"
+    | extend Principal = tostring(coalesce(column_ifexists("identity_claim_oid_g", ""),
+                                           column_ifexists("identity_claim_appid_g", "")))
+    | where isnotempty(Principal)
+    | where not(excludeAdmin and Principal in (KnownAutomationPrincipals))
+};
+
+
+// FilteredGraphActivity(excludeAdmin) — Microsoft Graph activity log: the ONLY
+// place Graph-plane recon and app-registration tampering shows up. OFF BY
+// DEFAULT (tenant diagnostic setting, requires Entra P1) — an empty result set
+// most likely means it was never enabled, not that nothing happened.
+let FilteredGraphActivity = (excludeAdmin: bool = true) {
+    MicrosoftGraphActivityLogs
+    | extend Principal = tostring(coalesce(ServicePrincipalId, AppId))
+    | where isnotempty(Principal)
+    | where not(excludeAdmin and (Principal in (KnownAutomationPrincipals)
+                                  or AppId in (KnownAutomationPrincipals)))
+};
