@@ -1,0 +1,15 @@
+hunting for suspicious commandlines:
+
+DeviceProcessEvents 
+| where Timestamp > ago(7d) 
+| where FileName in~ ("cmd.exe", "powershell.exe", "pwsh.exe", "powershell_ise.exe") 
+| where ProcessCommandLine has_any ("http://", "https://", "base64", "-EncodedCommand") 
+| where AccountName != @"system" 
+| extend SuspiciousPattern = case( 
+    ProcessCommandLine has "-EncodedCommand", "EncodedCommand", 
+    ProcessCommandLine has "base64", "Base64String", 
+    ProcessCommandLine has_any ("http://", "https://"), "UrlInCommand", 
+    "Other") 
+| project Timestamp, AccountName, AccountUpn, DeviceName, DeviceId, FileName, ProcessCommandLine, InitiatingProcessFileName, InitiatingProcessCommandLine, ProcessId, InitiatingProcessId, SuspiciousPattern 
+| order by Timestamp desc 
+| take 300 
